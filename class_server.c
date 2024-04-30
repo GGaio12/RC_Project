@@ -42,6 +42,11 @@ char* USER_TYPE;
 int create_tcp_server(int TCP_SV_PORT, int LISTEN_NUMS);
 void request_login_tcp(int client_fd);
 void process_tcp_client(int client_fd);
+char* list_classes();
+char* list_subscribed();
+char* subscribe_class(char* name);
+char* create_class(char* name, char* size);
+void send_text(char* name, char* text);
 
 /* Functions prototipes for udp */
 int create_udp_server(int UDP_SV_PORT);
