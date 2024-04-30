@@ -1,0 +1,13 @@
+server:
+    1 --> Receber e processar comandos dos clientes TCP:
+        - char* list_classes()
+        - char* list_subscribed()
+        - char* subscribe_class(char* name)
+        - char* create_class(char* name, char* size)
+        - void send_text(char* name, char* text)
+    
+    2 --> Receber e processar comandos dos clientes UDP:
+        - ADD_USER {username} {password} {administrador/aluno/professor}
+        - DEL {username}
+        - LIST
+        - QUIT_SERVER
