@@ -8,6 +8,7 @@
  * USE: >class_server <CLASS_PORT> <CONFIG_PORT> <CONFIG_FILE_NAME>
  *******************************************************************************/
 #include <sys/socket.h>
+#include <netinet/in.h>
 #include <sys/types.h>
 #include <netinet/in.h>
 #include <unistd.h>
@@ -22,8 +23,55 @@
 #include <errno.h>
 #include <signal.h>
 #include <sys/select.h>
+#include <sys/shm.h>
+#include <sys/ipc.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <semaphore.h>
+#include <stdbool.h>
 
 #define BUF_SIZE 1024 // size of the buffer used for send and recive messages
+#define MAX_CLASSES 5
+#define MULTICAST_PORT 9867
+#define BASE_MULTICAST_IP ""
+#define SHM_PATH "./tmp/classes_shm"
+#define BIN_SEM_PATH "./tmp/mutex"
+
+/* Functions prototipes for tcp */
+int create_tcp_server(int TCP_SV_PORT, int LISTEN_NUMS);
+void request_login_tcp(int client_fd);
+void process_tcp_client(int client_fd);
+char* list_classes();
+char* list_subscribed();
+char* subscribe_class(int client_fd, char* name);
+char* create_class(char* name, char* size, int client_fd);
+void send_text(char* name, char* text);
+
+/* Functions prototipes for udp */
+int create_udp_server(int UDP_SV_PORT);
+void request_login_udp(int udp_fd, struct sockaddr_in client_addr, socklen_t client_addr_size);
+void process_udp_client(int udp_fd);
+
+/* Functions prototipes for program suddenly close and/or error */
+void free_credential_vars();
+void close_sockets();
+void handle_sigint();
+void error(char *msg);
+
+typedef struct Class {
+    char* name;
+    char ip_address[16];
+    int socket;
+    int max_n_members;
+    int n_members;
+    char** members_user_names;
+};
+
+typedef struct shmStruct {
+    struct Class classes[MAX_CLASSES];
+    int n_classes;
+}shm;
 
 /* Important variables given, in the start of the program, by main arguments */
 char* CONFIG_FILE_NAME;
@@ -38,95 +86,108 @@ char* USER_NAME;
 char* USER_PASSWORD;
 char* USER_TYPE;
 
-/* Functions prototipes for tcp */
-int create_tcp_server(int TCP_SV_PORT, int LISTEN_NUMS);
-void request_login_tcp(int client_fd);
-void process_tcp_client(int client_fd);
-char* list_classes();
-char* list_subscribed();
-char* subscribe_class(char* name);
-char* create_class(char* name, char* size);
-void send_text(char* name, char* text);
+shm* shm_ptr;
+int shm_size = sizeof(shm);
+int shm_fd;
+bool shm_fdOpened = false, classesMaped = false;
 
-/* Functions prototipes for udp */
-int create_udp_server(int UDP_SV_PORT);
-void request_login_udp(int udp_fd, struct sockaddr_in client_addr, socklen_t client_addr_size);
-void process_udp_client(int udp_fd);
-
-/* Functions prototipes for program suddenly close and/or error */
-void free_credential_vars();
-void close_sockets();
-void handle_sigint();
-void error(char *msg);
+sem_t* mutex;
+bool mutexCreated = false;
 
 /**
  * Main function.
  */
 int main(int argc, char* argv[]) {
-  USER_NAME = (char*) malloc(sizeof(char)*30);
-  USER_PASSWORD = (char*) malloc(sizeof(char)*30);
-  USER_TYPE = (char*) malloc(sizeof(char)*20);
-
-  fd_set read_set;
-
-  /* Closes open sockets and frees all memories in C^ (SIGINT) case */
-  signal(SIGINT, handle_sigint);
-
-  /* Verifies if all the arguments were given in file execution */
-  if(argc != 4) {
-    printf("class_server <CLASS_PORT> <CONFIG_PORT> <CONFIG_FILE_NAME>");
-    exit(0);
-  }
-
-  /* Save port numbers for server and config file name */
-  TCP_SV_PORT = atoi(argv[1]);
-  UDP_SV_PORT = atoi(argv[2]);
-  CONFIG_FILE_NAME = argv[3];
-
-  /* Client socket address creation */
-  struct sockaddr_in client_addr;
-  int client_addr_size = sizeof(client_addr);
-
-  /* Creates the servers sockets used in tcp and udp */
-  tcp_fd = create_tcp_server(TCP_SV_PORT, 10);
-  udp_s = create_udp_server(UDP_SV_PORT);
-
-  /* Clear the descriptor set */
-  FD_ZERO(&read_set); 
- 
-  /* Gets the max fd between the tcp and udp */
-  int maxfdp = tcp_fd; 
-  if(maxfdp < udp_s) maxfdp = udp_s;
-  maxfdp++;
-
-  /* Starts lisning and process all informations that were received in the two sockets */
-  while(1) {
-    /* Sets the tcp and udp fds in the read set */
-    FD_SET(tcp_fd, &read_set);
-    FD_SET(udp_s, &read_set);
-
-    /* Selects the ready descriptor (the socket with information in) */
-    int nready = select(maxfdp, &read_set, NULL, NULL, NULL);
-
-    /* If there is information in the tcp socket it accept the connection */
-    if(FD_ISSET(tcp_fd, &read_set)) {
-      tcp_client = accept(tcp_fd,(struct sockaddr *)&client_addr,(socklen_t *)&client_addr_size);
-
-      /* Creates a child process to process the communication with the user */
-      if(fork() == 0) {
-        close(tcp_fd);
-        process_tcp_client(tcp_client);
-        exit(0);
-      }
+    /* Verifies if all the arguments were given in file execution */
+    if(argc != 4) {
+        printf("class_server <CLASS_PORT> <CONFIG_PORT> <CONFIG_FILE_NAME>");
+        exit(EXIT_FAILURE);
     }
 
-    /* If there is information in the udp socket it receive and process the communication */
-    if(FD_ISSET(udp_s, &read_set)) {
-      process_udp_client(udp_s);
-    }
-  }
+    /* Save port numbers for server and config file name */
+    TCP_SV_PORT = atoi(argv[1]);
+    UDP_SV_PORT = atoi(argv[2]);
+    CONFIG_FILE_NAME = argv[3];
 
-  return 0;
+    USER_NAME = (char*) malloc(sizeof(char)*30);
+    USER_PASSWORD = (char*) malloc(sizeof(char)*30);
+    USER_TYPE = (char*) malloc(sizeof(char)*20);
+
+    fd_set read_set;
+
+    /* Closes open sockets and frees all memories in C^ (SIGINT) case */
+    signal(SIGINT, handle_sigint);
+
+    /* Create a new shared memory object and maping it into address space of the process */
+    if((shm_fd = shm_open(SHM_PATH, O_CREAT | O_RDWR, 0666)) == -1) {
+        error("Opening shared memory");
+        exit(EXIT_FAILURE);
+    }
+    shm_fdOpened = true;
+    if(ftruncate(shm_fd, shm_size) == -1) {
+        error("Ftruncate shared memory");
+        exit(EXIT_FAILURE);
+    }
+    shm_ptr = mmap(NULL, shm_size, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
+    if(shm_ptr == MAP_FAILED) {
+        error("Mapping shared memory");
+        exit(EXIT_FAILURE);
+    }
+    classesMaped = true;
+
+    /* Initializing message queue named semaphore */
+    mutex = sem_open(BIN_SEM_PATH, O_CREAT, 0666, 0);
+    if(mutex == SEM_FAILED) error("Opening binary semaphore (mutex)");
+    mutexCreated = true;
+
+
+    /******************** TODO --> read file with shared memory saved if exits to update in memory *****************/
+
+
+    /* Client socket address creation */
+    struct sockaddr_in client_addr;
+    int client_addr_size = sizeof(client_addr);
+
+    /* Creates the servers sockets used in tcp and udp */
+    tcp_fd = create_tcp_server(TCP_SV_PORT, 10);
+    udp_s = create_udp_server(UDP_SV_PORT);
+
+    /* Clear the descriptor set */
+    FD_ZERO(&read_set); 
+    
+    /* Gets the max fd between the tcp and udp */
+    int maxfdp = tcp_fd; 
+    if(maxfdp < udp_s) maxfdp = udp_s;
+    maxfdp++;
+
+    /* Starts lisning and process all informations that were received in the two sockets */
+    while(1) {
+        /* Sets the tcp and udp fds in the read set */
+        FD_SET(tcp_fd, &read_set);
+        FD_SET(udp_s, &read_set);
+
+        /* Selects the ready descriptor (the socket with information in) */
+        int nready = select(maxfdp, &read_set, NULL, NULL, NULL);
+
+        /* If there is information in the tcp socket it accept the connection */
+        if(FD_ISSET(tcp_fd, &read_set)) {
+            tcp_client = accept(tcp_fd,(struct sockaddr *)&client_addr,(socklen_t *)&client_addr_size);
+
+            /* Creates a child process to process the communication with the user */
+            if(fork() == 0) {
+                close(tcp_fd);
+                process_tcp_client(tcp_client);
+                exit(0);
+            }
+        }
+
+        /* If there is information in the udp socket it receive and process the communication */
+        if(FD_ISSET(udp_s, &read_set)) {
+            process_udp_client(udp_s);
+        }
+    }
+
+    return 0;
 }
 
 
@@ -333,7 +394,7 @@ void process_tcp_client(int client_fd) {
                     if(sprintf(message, "Invalid command. USE: SUBSCRIBE_CLASS {name}") < 0) error("creating invalid command message");
                 }
                 else {
-                    if(sprintf(message, subscribe_class(token)) < 0) error("creating subscribe_class message");
+                    if(sprintf(message, subscribe_class(client_fd, token)) < 0) error("creating subscribe_class message");
                 }
             }
             else if(strcmp(token, "CREATE_CLASS") == 0 && strcmp(USER_TYPE, "professor") == 0) {
@@ -348,7 +409,7 @@ void process_tcp_client(int client_fd) {
                         if(sprintf(message, "Invalid command. USE: CREATE_CLASS {name} {size}") < 0) error("creating invalid command message");
                     }
                     else {
-                        if(sprintf(message, create_class(name, token)) < 0) error("creating create_class message");
+                        if(sprintf(message, create_class(name, token, client_fd)) < 0) error("creating create_class message");
                     }
                 }
             }
@@ -386,29 +447,139 @@ void process_tcp_client(int client_fd) {
  * Creates and returns a message that indicates all avaiable classes.
  */
 char* list_classes() {
+    char* message;
+    strcpy(message, "CLASS ");
 
+    int i = 0;
+    sem_wait(mutex);
+    /* Going throught all created classes in shared memory */
+    while(i < shm_ptr->n_classes) {
+        if(i != 0) strcat(message, ", ");
+        strcat(message, shm_ptr->classes[i].name);
+        i++;
+    }
+    sem_post(mutex);
+
+    if(i == 0) strcpy(message, "NO CLASSES CREATED");
+    return message;
 }
 
 /**
  * Creates and returns a message that indicates all classes that the client is subscribed.
  */
 char* list_subscribed() {
+    bool sub;
+    char* message;
+    strcpy(message, "CLASS ");
+    
+    int i = 0;
+    sem_wait(mutex);
+    /* Going throught all created classes in shared memory */
+    while(i < shm_ptr->n_classes) {
+        sub = false;
+        /* Verifies if the student is in the class */
+        for(int j = 0; j < shm_ptr->classes[i].n_members; j++) {
+            if(strcmp(shm_ptr->classes[i].members_user_names[j], USER_NAME) == 0) {
+                sub = true;
+                break;
+            }
+        }
 
+        /* If the student is in the class, adds the class name and multicast ip address to the message */
+        if(sub) {
+            if(i != 0) strcat(message, ", ");
+            strcat(message, shm_ptr->classes[i].name);
+            strcat(message, "/");
+            strcat(message, shm_ptr->classes[i].ip_address);
+        }
+        i++;
+    }
+    sem_post(mutex);
+
+    if(i == 0) strcpy(message, "NO CLASSES SUBSCRIBED");
+    return message;
 }
-
 
 /**
  * Susbscribe a class with a specific 'name' and return a message 'ACCEPTED {multicast}' or 'REJECTED'.
  */
-char* subscribe_class(char* name) {
+char* subscribe_class(int client_fd, char* name) {
+    char* message;
 
+    bool found = false;
+    int i = 0;
+    sem_wait(mutex);
+    /* Going throught all created classes in shared memory */
+    while(i < shm_ptr->n_classes) {
+        /* Verifies if the class have the same name wanted */
+        if(strcmp(shm_ptr->classes[i].name, name) == 0) {
+            found = true;
+            /* Verifies if the class still have space for new members */
+            if(shm_ptr->classes[i].n_members < shm_ptr->classes[i].max_n_members) {
+                /* Adds the student to multicast group */
+                struct ip_mreq mreq;
+                mreq.imr_multiaddr.s_addr = inet_addr(shm_ptr->classes[i].ip_address);
+                mreq.imr_interface.s_addr = htonl(INADDR_ANY);
+                if(setsockopt(client_fd, IPPROTO_IP, IP_ADD_MEMBERSHIP, &mreq, sizeof(mreq)) < 0) error("Seting socket options");
+
+                /* Adds the student user name to the members user name */
+                strcpy(shm_ptr->classes[i].members_user_names[shm_ptr->classes[i].n_members], USER_NAME);
+                shm_ptr->classes[i].n_members++;
+
+                strcpy(message, "ACCEPTED ");
+                strcat(message, shm_ptr->classes[i].ip_address);
+            }
+            else strcpy(message, "REJECTED");
+            i++;
+            break;
+        }
+        i++;
+    }
+    sem_post(mutex);
+
+    if(i == 0) strcpy(message, "NO CLASSES CREATED");
+    else if(!found) strcpy(message, "CLASS NOT FOUND");
+    return message;
 }
 
 /**
- * Creates a new class with a specific 'name' and return a message 'OK {multicast}'.
+ * Creates a new class with a specific 'name' and 'size' and return a message 'OK {multicast}'.
  */
-char* create_class(char* name, char* size) {
+char* create_class(char* name, char* size, int client_fd) {
+    char* message;
 
+    sem_wait(mutex);
+    /* Verifies if there are space to create a new class */
+    if(shm_ptr->n_classes >= MAX_CLASSES) strcpy(message, "REJECTED: MAX CLASSES REACHED");
+    else {
+        /* Creating a new class */
+        struct Class newClass;
+        char newIP[16] = strcat(BASE_MULTICAST_IP, itoa((shm_ptr->n_classes + 1)));
+        strcpy(newClass.name, name);                       // Class name
+        strcpy(newClass.ip_address, newIP);                // Multicast IP
+
+        newClass.socket = create_multicast_socket(newIP);  // Multicast socket
+
+        /* Adding the professor to the multicast group */
+        struct ip_mreq mreq;
+        mreq.imr_multiaddr.s_addr = inet_addr(newIP);
+        mreq.imr_interface.s_addr = htonl(INADDR_ANY);
+        if(setsockopt(client_fd, IPPROTO_IP, IP_ADD_MEMBERSHIP, &mreq, sizeof(mreq)) < 0) error("Seting socket options");
+
+        newClass.max_n_members = atoi(size);                // Class max number of members
+        newClass.n_members = 1;                             // Adding the professor to the number of members
+        strcpy(newClass.members_user_names[0], USER_NAME);  // Adding the professor user name to the members user names
+
+        /* Adding the new class to the classes in shared memory */
+        shm_ptr->classes[shm_ptr->n_classes] = newClass;
+        shm_ptr->n_classes++;
+
+        strcpy(message, "OK ");
+        strcat(message, newIP);
+    }
+    sem_post(mutex);
+
+    return message;
 }
 
 /**
@@ -416,6 +587,35 @@ char* create_class(char* name, char* size) {
  */
 void send_text(char* name, char* text) {
 
+}
+
+/**
+ * Creates a new multicast socket in a given multicast address
+ */
+int create_multicast_socket(char* multicast_addr) {
+    int sock;
+    struct sockaddr_in addr;
+
+    /* Creating socket */
+    sock = socket(AF_INET, SOCK_DGRAM, 0);
+    if(sock < 0) error("Socket creation failed");
+
+    /* Filling the multicast address details */
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = inet_addr(multicast_addr);
+    addr.sin_port = htons(MULTICAST_PORT);
+
+    /* Binding multicast socket to multicast address */
+    if(bind(sock, (struct sockaddr *)&addr, sizeof(addr)) < 0) error("Binding multicast socket");
+
+    /* Seting up multicast group membership */
+    struct ip_mreq mreq;
+    mreq.imr_multiaddr.s_addr = inet_addr(multicast_addr);
+    mreq.imr_interface.s_addr = htonl(INADDR_ANY);
+    if(setsockopt(sock, IPPROTO_IP, IP_ADD_MEMBERSHIP, (char *)&mreq, sizeof(mreq)) < 0) error("Seting socket options");
+
+    return sock;
 }
 
 
@@ -660,11 +860,11 @@ void handle_sigint() {
  * Prints an error message and exists after closes and liberates everything.
  */
 void error(char *msg){
-  close_sockets();
+    close_sockets();
 
-  free_credential_vars();
+    free_credential_vars();
 
 	printf("Error: %s\n", msg);
-  fflush(stdout);
-	exit(-1);
+    fflush(stdout);
+	exit(EXIT_FAILURE);
 }
