@@ -16,4 +16,7 @@ server:
 
     4 --> Apos abrir a shared memory verificar se existe um file com informação anterior para colocar na memoria
 
+    sem:
+    mutexCreated
+
     5 --> Verificar a forma de libertar os recursos todos de forma eficiente e clara em caso de erro e/ou fechamento do servidor

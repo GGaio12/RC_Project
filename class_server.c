@@ -73,6 +73,9 @@ typedef struct shmStruct {
     int n_classes;
 }shm;
 
+/* Server main process PID */
+pid_t SV_PID;
+
 /* Important variables given, in the start of the program, by main arguments */
 char* CONFIG_FILE_NAME;
 int TCP_SV_PORT;
@@ -80,6 +83,7 @@ int UDP_SV_PORT;
 
 /* Sockets used in tcp and udp, client and server */
 int tcp_client, tcp_fd, udp_s;
+bool tcp_fdCreated = false, udp_sCreated = false;
 
 /* Variables that will store the user information for future use if need */
 char* USER_NAME;
@@ -103,6 +107,8 @@ int main(int argc, char* argv[]) {
         printf("class_server <CLASS_PORT> <CONFIG_PORT> <CONFIG_FILE_NAME>");
         exit(EXIT_FAILURE);
     }
+
+    SV_PID = getpid();
 
     /* Save port numbers for server and config file name */
     TCP_SV_PORT = atoi(argv[1]);
@@ -141,7 +147,9 @@ int main(int argc, char* argv[]) {
 
     /* Creates the servers sockets used in tcp and udp */
     tcp_fd = create_tcp_server(TCP_SV_PORT, 10);
+    tcp_fdCreated = true;
     udp_s = create_udp_server(UDP_SV_PORT);
+    udp_sCreated = true;
 
     /* Clear the descriptor set */
     FD_ZERO(&read_set); 
@@ -168,7 +176,7 @@ int main(int argc, char* argv[]) {
             if(fork() == 0) {
                 close(tcp_fd);
                 process_tcp_client(tcp_client);
-                exit(0);
+                exit(EXIT_SUCCESS);
             }
         }
 
@@ -634,7 +642,6 @@ int create_multicast_socket(char* multicast_addr) {
  * 
  *******************************************************/
 
-
 /**
  * Creates and returns a new udp server socket in port 'UDP_SV_PORT'.
 */
@@ -849,29 +856,70 @@ void free_credential_vars() {
  * Closes all the sockets created if they exist.
  */
 void close_sockets() {
-  if(tcp_fd) close(tcp_fd);
-  if(tcp_client) close(tcp_client);
-  if(udp_s) close(udp_s);
+  if(tcp_fdCreated) close(tcp_fd);
+  if(udp_sCreated) close(udp_s);
+  sem_wait(mutex);
+  for(int i = 0; i < shm_ptr->n_classes; i++) {
+    close(shm_ptr->classes[i].socket);
+  }
+  sem_post(mutex);
+}
+
+/**
+ * Closes the shared memory.
+ */
+void close_shm() {
+    if(classesMaped) {
+        /* Unmaping shared memory */
+        if(munmap(shm_ptr, shm_size) == -1) {
+            perror("SHM unmap");
+            exit(EXIT_FAILURE);
+        }
+    }
+    if(shm_fdOpened) {
+        /* Closing shared memory */
+        if(close(shm_fd) == -1) {
+            perror("SHM close");
+            exit(EXIT_FAILURE);
+        }
+        /* Unlinking shared memory */
+        if(shm_unlink(SHM_PATH) == -1) {
+            perror("SHM unlink");
+            exit(EXIT_FAILURE);
+        }
+    }
+}
+
+/**
+ * Frees all resources.
+ */
+void free_all_resources() {
+    free_credential_vars();
+    close_sockets();
+    close_shm();
+    sem_close(mutex);
 }
 
 /**
  * Handles SIGINT signal closing and freeing all the resorces.
  */
 void handle_sigint() {
-  close_sockets();
-  
-  free_credential_vars();
+    if(getpid() == SV_PID) free_all_resources();
+    else close(tcp_client);
 
-  exit(0);
+    exit(EXIT_FAILURE);
 }
 
 /**
- * Prints an error message and exists after closes and liberates everything.
+ * Prints an error message and exists after closes and frees everything.
  */
 void error(char *msg){
-    close_sockets();
-
-    free_credential_vars();
+    if(getpid() == SV_PID) {
+        signal(SIGQUIT, SIG_IGN);
+        kill(0, SIGQUIT);
+        free_all_resources();
+    }
+    else close(tcp_client);
 
 	printf("Error: %s\n", msg);
     fflush(stdout);
