@@ -119,24 +119,15 @@ int main(int argc, char* argv[]) {
     signal(SIGINT, handle_sigint);
 
     /* Create a new shared memory object and maping it into address space of the process */
-    if((shm_fd = shm_open(SHM_PATH, O_CREAT | O_RDWR, 0666)) == -1) {
-        error("Opening shared memory");
-        exit(EXIT_FAILURE);
-    }
+    if((shm_fd = shm_open(SHM_PATH, O_CREAT | O_RDWR, 0666)) == -1) error("Opening shared memory");
     shm_fdOpened = true;
-    if(ftruncate(shm_fd, shm_size) == -1) {
-        error("Ftruncate shared memory");
-        exit(EXIT_FAILURE);
-    }
+    if(ftruncate(shm_fd, shm_size) == -1) error("Ftruncate shared memory");
     shm_ptr = mmap(NULL, shm_size, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
-    if(shm_ptr == MAP_FAILED) {
-        error("Mapping shared memory");
-        exit(EXIT_FAILURE);
-    }
+    if(shm_ptr == MAP_FAILED) error("Mapping shared memory");
     classesMaped = true;
 
     /* Initializing message queue named semaphore */
-    mutex = sem_open(BIN_SEM_PATH, O_CREAT, 0666, 0);
+    mutex = sem_open(BIN_SEM_PATH, O_CREAT, 0666, 1);
     if(mutex == SEM_FAILED) error("Opening binary semaphore (mutex)");
     mutexCreated = true;
 
@@ -473,6 +464,7 @@ char* list_subscribed() {
     strcpy(message, "CLASS ");
     
     int i = 0;
+    int j = 0;
     sem_wait(mutex);
     /* Going throught all created classes in shared memory */
     while(i < shm_ptr->n_classes) {
@@ -491,12 +483,14 @@ char* list_subscribed() {
             strcat(message, shm_ptr->classes[i].name);
             strcat(message, "/");
             strcat(message, shm_ptr->classes[i].ip_address);
+            j++;
         }
         i++;
     }
     sem_post(mutex);
 
-    if(i == 0) strcpy(message, "NO CLASSES SUBSCRIBED");
+    if(i == 0) strcpy(message, "NO CLASSES CREATED");
+    else if(j == 0) strcpy(message, "NO CLASSES SUBSCRIBED");
     return message;
 }
 
@@ -586,7 +580,22 @@ char* create_class(char* name, char* size, int client_fd) {
  * Sends a message to a class with a specific 'name'.
  */
 void send_text(char* name, char* text) {
-    int a;
+    int class_socket;
+
+    int i = 0;
+    sem_wait(mutex);
+    /* Going throught all created classes in shared memory */
+    while(i < shm_ptr->n_classes) {
+        if(strcmp(shm_ptr->classes[i].name, name) == 0) {
+            class_socket = shm_ptr->classes[i].socket;
+            break;
+        }
+        i++;
+    }
+    sem_post(mutex);
+
+    /* Sending muticast message */
+    if(write(class_socket, text, 1 + strlen(text)) == -1) error("sending multicast message");
 }
 
 /**
