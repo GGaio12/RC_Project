@@ -586,7 +586,7 @@ char* create_class(char* name, char* size, int client_fd) {
  * Sends a message to a class with a specific 'name'.
  */
 void send_text(char* name, char* text) {
-
+    int a;
 }
 
 /**
