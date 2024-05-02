@@ -34,7 +34,7 @@
 #define BUF_SIZE 1024 // size of the buffer used for send and recive messages
 #define MAX_CLASSES 5
 #define MULTICAST_PORT 9867
-#define BASE_MULTICAST_IP ""
+#define BASE_MULTICAST_IP "239.0.0."
 #define SHM_PATH "./tmp/classes_shm"
 #define BIN_SEM_PATH "./tmp/mutex"
 
@@ -44,9 +44,12 @@ void request_login_tcp(int client_fd);
 void process_tcp_client(int client_fd);
 char* list_classes();
 char* list_subscribed();
-char* subscribe_class(int client_fd, char* name);
-char* create_class(char* name, char* size, int client_fd);
+char* subscribe_class(char* name);
+char* create_class(char* name, char* size);
 void send_text(char* name, char* text);
+int create_multicast_socket();
+struct sockaddr_in create_multicast_addr(char* multicast_ip);
+
 
 /* Functions prototipes for udp */
 int create_udp_server(int UDP_SV_PORT);
@@ -56,6 +59,8 @@ void process_udp_client(int udp_fd);
 /* Functions prototipes for program suddenly close and/or error */
 void free_credential_vars();
 void close_sockets();
+void close_shm();
+void free_all_resources();
 void handle_sigint();
 void error(char *msg);
 
@@ -63,6 +68,7 @@ typedef struct Class {
     char* name;
     char ip_address[16];
     int socket;
+    struct sockaddr_in addr;
     int max_n_members;
     int n_members;
     char** members_user_names;
@@ -393,7 +399,7 @@ void process_tcp_client(int client_fd) {
                     if(sprintf(message, "Invalid command. USE: SUBSCRIBE_CLASS {name}") < 0) error("creating invalid command message");
                 }
                 else {
-                    if(sprintf(message, subscribe_class(client_fd, token)) < 0) error("creating subscribe_class message");
+                    if(sprintf(message, subscribe_class(token)) < 0) error("creating subscribe_class message");
                 }
             }
             else if(strcmp(token, "CREATE_CLASS") == 0 && strcmp(USER_TYPE, "professor") == 0) {
@@ -408,7 +414,7 @@ void process_tcp_client(int client_fd) {
                         if(sprintf(message, "Invalid command. USE: CREATE_CLASS {name} {size}") < 0) error("creating invalid command message");
                     }
                     else {
-                        if(sprintf(message, create_class(name, token, client_fd)) < 0) error("creating create_class message");
+                        if(sprintf(message, create_class(name, token)) < 0) error("creating create_class message");
                     }
                 }
             }
@@ -505,7 +511,7 @@ char* list_subscribed() {
 /**
  * Susbscribe a class with a specific 'name' and return a message 'ACCEPTED {multicast}' or 'REJECTED'.
  */
-char* subscribe_class(int client_fd, char* name) {
+char* subscribe_class(char* name) {
     char* message;
 
     bool found = false;
@@ -518,12 +524,6 @@ char* subscribe_class(int client_fd, char* name) {
             found = true;
             /* Verifies if the class still have space for new members */
             if(shm_ptr->classes[i].n_members < shm_ptr->classes[i].max_n_members) {
-                /* Adds the student to multicast group */
-                struct ip_mreq mreq;
-                mreq.imr_multiaddr.s_addr = inet_addr(shm_ptr->classes[i].ip_address);
-                mreq.imr_interface.s_addr = htonl(INADDR_ANY);
-                if(setsockopt(client_fd, IPPROTO_IP, IP_ADD_MEMBERSHIP, &mreq, sizeof(mreq)) < 0) error("Seting socket options");
-
                 /* Adds the student user name to the members user name */
                 strcpy(shm_ptr->classes[i].members_user_names[shm_ptr->classes[i].n_members], USER_NAME);
                 shm_ptr->classes[i].n_members++;
@@ -547,7 +547,7 @@ char* subscribe_class(int client_fd, char* name) {
 /**
  * Creates a new class with a specific 'name' and 'size' and return a message 'OK {multicast}'.
  */
-char* create_class(char* name, char* size, int client_fd) {
+char* create_class(char* name, char* size) {
     char* message;
 
     sem_wait(mutex);
@@ -557,16 +557,11 @@ char* create_class(char* name, char* size, int client_fd) {
         /* Creating a new class */
         struct Class newClass;
         char newIP[16] = strcat(BASE_MULTICAST_IP, itoa((shm_ptr->n_classes + 1)));
-        strcpy(newClass.name, name);                       // Class name
-        strcpy(newClass.ip_address, newIP);                // Multicast IP
+        strcpy(newClass.name, name);                        // Class name
+        strcpy(newClass.ip_address, newIP);                 // Multicast IP
 
-        newClass.socket = create_multicast_socket(newIP);  // Multicast socket
-
-        /* Adding the professor to the multicast group */
-        struct ip_mreq mreq;
-        mreq.imr_multiaddr.s_addr = inet_addr(newIP);
-        mreq.imr_interface.s_addr = htonl(INADDR_ANY);
-        if(setsockopt(client_fd, IPPROTO_IP, IP_ADD_MEMBERSHIP, &mreq, sizeof(mreq)) < 0) error("Seting socket options");
+        newClass.socket = create_multicast_socket();        // Multicast socket
+        newClass.addr = create_multicast_addr(newIP);       // Multicast address
 
         newClass.max_n_members = atoi(size);                // Class max number of members
         newClass.n_members = 1;                             // Adding the professor to the number of members
@@ -589,6 +584,7 @@ char* create_class(char* name, char* size, int client_fd) {
  */
 void send_text(char* name, char* text) {
     int class_socket;
+    struct sockaddr_in class_addr;
 
     int i = 0;
     sem_wait(mutex);
@@ -596,6 +592,7 @@ void send_text(char* name, char* text) {
     while(i < shm_ptr->n_classes) {
         if(strcmp(shm_ptr->classes[i].name, name) == 0) {
             class_socket = shm_ptr->classes[i].socket;
+            class_addr = shm_ptr->classes[i].addr;
             break;
         }
         i++;
@@ -603,36 +600,37 @@ void send_text(char* name, char* text) {
     sem_post(mutex);
 
     /* Sending muticast message */
-    if(write(class_socket, text, 1 + strlen(text)) == -1) error("sending multicast message");
+    if(sendto(class_socket, text, 1 + strlen(text), 0, (struct sockaddr *)&class_addr, sizeof(class_addr)) < 0) {
+        error("sending multicast message");
+    }
 }
 
 /**
  * Creates a new multicast socket in a given multicast address
  */
-int create_multicast_socket(char* multicast_addr) {
+int create_multicast_socket() {
     int sock;
-    struct sockaddr_in addr;
-
-    /* Creating socket */
+    
+    /* Creating the socket */
     sock = socket(AF_INET, SOCK_DGRAM, 0);
     if(sock < 0) error("Socket creation failed");
+
+    return sock;
+}
+
+/**
+ * Creates the address structure for a multicast socket with a given multicast ip.
+ */
+struct sockaddr_in create_multicast_addr(char* multicast_ip) {
+    struct sockaddr_in addr;
 
     /* Filling the multicast address details */
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = inet_addr(multicast_addr);
+    addr.sin_addr.s_addr = inet_addr(multicast_ip);
     addr.sin_port = htons(MULTICAST_PORT);
 
-    /* Binding multicast socket to multicast address */
-    if(bind(sock, (struct sockaddr *)&addr, sizeof(addr)) < 0) error("Binding multicast socket");
-
-    /* Seting up multicast group membership */
-    struct ip_mreq mreq;
-    mreq.imr_multiaddr.s_addr = inet_addr(multicast_addr);
-    mreq.imr_interface.s_addr = htonl(INADDR_ANY);
-    if(setsockopt(sock, IPPROTO_IP, IP_ADD_MEMBERSHIP, (char *)&mreq, sizeof(mreq)) < 0) error("Seting socket options");
-
-    return sock;
+    return addr;
 }
 
 
