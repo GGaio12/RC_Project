@@ -19,29 +19,38 @@
 
 #define BUF_SIZE 1024        // size of the buffer used for send and recive messages
 #define MAX_SUB_CLASSES 5    // Max number of multicast sockets
-#define MULTICAST_PORT 9867
+#define MULTICAST_PORT 9867  // Multicast port of the classes
 
-/* Functions prototipes for program suddenly close and/or error */
+/* TCP process help functions */
 int create_socket(char* server_addr, char* server_port);
+void process_list_subscribed();
+void process_subscribe_class(char* name);
+void process_create_class(char* name);
+void add_class(char* name, char* addr_ip);
+
+/* System Manage functions */
 void close_sockets();
 void handle_sigint();
 void error(char *msg);
 
+/* Struct of a class */
 typedef struct class {
     char* name;
     int socket;
     struct sockaddr_in addr;
 };
 
+/* Struct to store all classes */
 typedef struct classes_sockets {
     struct class classes[MAX_SUB_CLASSES];
     int n_classes;
 };
 
-/* Initializing variables */
+/* Initializing useful variables */
 char buffer[BUF_SIZE];
 char message[BUF_SIZE];
 int nread;
+int maxfdp;
 bool loged_in;
 struct classes_sockets class_sockets;
 
@@ -49,7 +58,6 @@ struct classes_sockets class_sockets;
 int fd;
 bool fdCreated = false;
 
-int maxfdp;
 
 /**
  * Main function.
