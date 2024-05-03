@@ -124,9 +124,11 @@ int main(int argc, char *argv[]) {
                     else {
                         char* token = strtok(message, " ");
                         if(token != NULL) {
-                            if(strcmp(token, "SUBSCRIBE_CLASS") == 0) process_subscribe_class();
-                            else if(strcmp(token, "CREATE_CLASS") == 0) process_create_class();
-                            else if(strcmp(token, "SEND") == 0) process_send();
+                            char* name = strtok(NULL, " ");
+                            if(name != NULL) {
+                                if(strcmp(token, "SUBSCRIBE_CLASS") == 0) process_subscribe_class(name);
+                                else if(strcmp(token, "CREATE_CLASS") == 0) process_create_class(name);
+                            }
                         }
                     }
                 }
@@ -219,28 +221,57 @@ void process_list_subscribed() {
 
             break;
         }
-    } while(1);
+    } while(true);
 }
 
 /**
  * Process SUBSCRIBE_CLASS command servers answer.
  */
-void process_subscribe_class() {
+void process_subscribe_class(char* name) {
+    /* Waits server answer */
+    do {
+        nread = read(fd, buffer, BUF_SIZE-1);
+        if(nread < 0) error("read function (nread < 0)");
 
+        if(nread > 0) {
+            buffer[nread] = '\0';
+
+            /* Prints servers answer */
+            puts(buffer);
+
+            char* token = strtok(buffer, " ");
+            /* If server answers classes, add it to subscribed classes structure */
+            if(strcmp(token, "ACCEPTED") == 0) {
+                char* addr_ip = strtok(NULL, " ");
+                add_class(name, addr_ip);
+            }
+        }
+    } while(true);
 }
 
 /**
  * Process CREATE_CLASS command servers answer.
  */
-void process_create_class() {
+void process_create_class(char* name) {
+    /* Waits server answer */
+    do {
+        nread = read(fd, buffer, BUF_SIZE-1);
+        if(nread < 0) error("read function (nread < 0)");
 
-}
+        if(nread > 0) {
+            buffer[nread] = '\0';
 
-/**
- * Process SEND command servers answer.
- */
-void process_send() {
+            /* Prints servers answer */
+            puts(buffer);
 
+            char* token = strtok(buffer, " ");
+            /* If server answers ok, add it to subscribed classes structure */
+            if(strcmp(token, "OK") == 0) {
+                char* addr_ip = strtok(NULL, " ");
+                add_class(name, addr_ip);
+            }
+        }
+    } while(true);
 }
 
 /**

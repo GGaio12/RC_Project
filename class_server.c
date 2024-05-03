@@ -566,30 +566,42 @@ char* subscribe_class(char* name) {
  */
 char* create_class(char* name, char* size) {
     char* message;
+    bool have_same_name = false;
 
     sem_wait(mutex);
     /* Verifies if there are space to create a new class */
     if(shm_ptr->n_classes >= MAX_CLASSES) strcpy(message, "REJECTED: MAX CLASSES REACHED");
     else {
-        /* Creating a new class */
-        struct Class newClass;
-        char newIP[16] = strcat(BASE_MULTICAST_IP, itoa((shm_ptr->n_classes + 1)));
-        strcpy(newClass.name, name);                        // Class name
-        strcpy(newClass.ip_address, newIP);                 // Multicast IP
+        /* First verifies if already exist a class with the same name */
+        for(int i = 0; i < shm_ptr->n_classes; i++) {
+            if(strcmp(shm_ptr->classes[i].name, name) == 0) {
+                strcpy(message, "REJECTED: ALREADY EXIST A CLASS WITH THAT NAME");
+                have_same_name = true;
+                break;
+            }
+        }
 
-        newClass.socket = create_multicast_socket();        // Multicast socket
-        newClass.addr = create_multicast_addr(newIP);       // Multicast address
+        if(!have_same_name) {
+            /* Creating a new class */
+            struct Class newClass;
+            char newIP[16] = strcat(BASE_MULTICAST_IP, itoa((shm_ptr->n_classes + 1)));
+            strcpy(newClass.name, name);                        // Class name
+            strcpy(newClass.ip_address, newIP);                 // Multicast IP
 
-        newClass.max_n_members = atoi(size);                // Class max number of members
-        newClass.n_members = 1;                             // Adding the professor to the number of members
-        strcpy(newClass.members_user_names[0], USER_NAME);  // Adding the professor user name to the members user names
+            newClass.socket = create_multicast_socket();        // Multicast socket
+            newClass.addr = create_multicast_addr(newIP);       // Multicast address
 
-        /* Adding the new class to the classes in shared memory */
-        shm_ptr->classes[shm_ptr->n_classes] = newClass;
-        shm_ptr->n_classes++;
+            newClass.max_n_members = atoi(size);                // Class max number of members
+            newClass.n_members = 1;                             // Adding the professor to the number of members
+            strcpy(newClass.members_user_names[0], USER_NAME);  // Adding the professor user name to the members user names
 
-        strcpy(message, "OK ");
-        strcat(message, newIP);
+            /* Adding the new class to the classes in shared memory */
+            shm_ptr->classes[shm_ptr->n_classes] = newClass;
+            shm_ptr->n_classes++;
+
+            strcpy(message, "OK ");
+            strcat(message, newIP);
+        }
     }
     sem_post(mutex);
 
