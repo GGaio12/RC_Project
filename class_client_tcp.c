@@ -15,6 +15,7 @@
 #include <netdb.h>
 #include <signal.h>
 #include <stdbool.h>
+#include <sys/select.h>
 
 #define BUF_SIZE 1024        // size of the buffer used for send and recive messages
 #define MAX_SUB_CLASSES 5    // Max number of multicast sockets
@@ -22,7 +23,7 @@
 
 /* Functions prototipes for program suddenly close and/or error */
 int create_socket(char* server_addr, char* server_port);
-void close_socket();
+void close_sockets();
 void handle_sigint();
 void error(char *msg);
 
@@ -46,6 +47,9 @@ struct classes_sockets class_sockets;
 
 /* Socket used in tcp communication */
 int fd;
+bool fdCreated = false;
+
+int maxfdp;
 
 /**
  * Main function.
@@ -62,59 +66,95 @@ int main(int argc, char *argv[]) {
 
     /* Creates the socket structure and connects it to the server */
     fd = create_socket(argv[1], argv[2]);
-
+    fdCreated = true;
     class_sockets.n_classes = 0;
+    fd_set read_set;
+
+    /* Clear the descriptor set */
+    FD_ZERO(&read_set);
+
+    /* Gets the max fd */
+    maxfdp = fd + 1;
 
     /* Reads everything server sends and send command to the server if loged in until 'QUIT' command */
     loged_in = false;
     do {
-        nread = read(fd, buffer, BUF_SIZE-1);
-        if(nread < 0) error("read function (nread < 0)");
+        /* Sets all sockets in the read set */
+        FD_SET(fd, &read_set);
+        for(int i = 0; i < class_sockets.n_classes; i++) FD_SET(class_sockets.classes[i].socket, &read_set);
 
-        /* If the server send a message print it and act if necessary/wanted */
-        if(nread > 0) {
-            buffer[nread] = '\0';
+        /* Selects the ready descriptor (the socket with information in) */
+        int nready = select(maxfdp, &read_set, NULL, NULL, NULL);
 
-            /* Prints what server send */
-            puts(buffer);
+        if(FD_ISSET(fd, &read_set)) {
+            nread = read(fd, buffer, BUF_SIZE-1);
+            if(nread < 0) error("read function (nread < 0)");
 
-            /* If the client isn't loged in the server, keeps trying to login until it is or until 'QUIT' */
-            if(!loged_in) {
-                if(strcmp(buffer, "Please enter your LOGIN credentials (LOGIN <username> <password>):") == 0) {
+            /* If the server send a message print it and act if necessary/wanted */
+            if(nread > 0) {
+                buffer[nread] = '\0';
+
+                /* Prints what server send */
+                puts(buffer);
+
+                /* If the client isn't loged in the server, keeps trying to login until it is or until 'QUIT' */
+                if(!loged_in) {
+                    if(strcmp(buffer, "Please enter your LOGIN credentials (LOGIN <username> <password>):") == 0) {
+                        fgets(message, sizeof(message), stdin);
+                        message[strcspn(message, "\n")] = 0;
+
+                        if(write(fd, message, 1 + strlen(message)) == -1) {
+                            error("sending login credentials message");
+                        }
+
+                        if(strcmp(message, "QUIT") == 0) break;
+                    }
+                    else if(strcmp(buffer, "OK") == 0) loged_in = true;  
+                }
+                /* Otherwise the server is waiting for a new command or answering */
+                else if(strcmp(buffer, "Waiting new command...") == 0) {
                     fgets(message, sizeof(message), stdin);
                     message[strcspn(message, "\n")] = 0;
 
-                    if(write(fd, message, 1 + strlen(message)) == -1) {
-                        error("sending login credentials message");
-                    }
+                    if(write(fd, message, 1 + strlen(message)) == -1) error("sending new command message");
 
                     if(strcmp(message, "QUIT") == 0) break;
-                }
-                else if(strcmp(buffer, "OK") == 0) loged_in = true;  
-            }
-            /* Otherwise the server is waiting for a new command or answering */
-            else if(strcmp(buffer, "Waiting new command...") == 0) {
-                fgets(message, sizeof(message), stdin);
-                message[strcspn(message, "\n")] = 0;
-
-                if(write(fd, message, 1 + strlen(message)) == -1) error("sending new command message");
-
-                if(strcmp(message, "QUIT") == 0) break;
-                else if(strcmp(message, "LIST_CLASSES") == 0) continue;
-                else if(strcmp(message, "LIST_SUBSCRIBED") == 0) process_list_subscribed();
-                else {
-                    char* token = strtok(message, " ");
-                    if(token != NULL) {
-                        if(strcmp(token, "SUBSCRIBE_CLASS") == 0) process_subscribe_class();
-                        else if(strcmp(token, "CREATE_CLASS") == 0) process_create_class();
-                        else if(strcmp(token, "SEND") == 0) process_send();
+                    else if(strcmp(message, "LIST_CLASSES") == 0) continue;
+                    else if(strcmp(message, "LIST_SUBSCRIBED") == 0) process_list_subscribed();
+                    else {
+                        char* token = strtok(message, " ");
+                        if(token != NULL) {
+                            if(strcmp(token, "SUBSCRIBE_CLASS") == 0) process_subscribe_class();
+                            else if(strcmp(token, "CREATE_CLASS") == 0) process_create_class();
+                            else if(strcmp(token, "SEND") == 0) process_send();
+                        }
                     }
                 }
             }
         }
-    } while(1);
+
+        for(int i = 0; i < class_sockets.n_classes; i++) {
+            if(FD_ISSET(class_sockets.classes[i].socket, &read_set)) {
+                do {
+                    socklen_t addr_size = sizeof(class_sockets.classes[i].addr);
+                    nread = recvfrom(class_sockets.classes[i].socket, buffer, sizeof(buffer), 0, (struct sockaddr *)&class_sockets.classes[i].addr, &addr_size); 
+                    if(nread < 0) error("read function (nread < 0)");
+
+                    if(nread > 0) {
+                        buffer[nread] = '\0';
+
+                        /* Prints what was sent by multicast */
+                        puts(buffer);
+
+                        break;
+                    }
+                } while(true);
+            }  
+        }
+    } while(true);
   
-    close(fd); // closes the socket to end communication
+    /* Closes all sockets to end communicastions */
+    close_sockets();
     return 0;
 }
 
@@ -150,6 +190,7 @@ int create_socket(char* server_addr, char* server_port) {
  * Process LIST_SUBSCRIBED command servers answer.
  */
 void process_list_subscribed() {
+    /* Waits server answer */
     do {
         nread = read(fd, buffer, BUF_SIZE-1);
         if(nread < 0) error("read function (nread < 0)");
@@ -157,9 +198,11 @@ void process_list_subscribed() {
         if(nread > 0) {
             buffer[nread] = '\0';
 
+            /* Prints servers answer */
             puts(buffer);
 
             char* token = strtok(buffer, " ");
+            /* If server answers classes, add it to subscribed classes structure */
             if(strcmp(token, "CLASS") == 0) {
                 char* name;
                 char* ip;
@@ -173,6 +216,8 @@ void process_list_subscribed() {
                     add_class(name, ip);
                 }
             }
+
+            break;
         }
     } while(1);
 }
@@ -209,20 +254,20 @@ void add_class(char* name, char* addr_ip) {
 
     struct sockaddr_in addr;
 
-    // set up the multicast address structure
+    /* Setting up multicast address struture */
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
     addr.sin_addr.s_addr = inet_addr(addr_ip);
     addr.sin_port = htons(MULTICAST_PORT);
 
-    // bind the socket to the port
+    /* Binding the socket to the port */
     if(bind(sock, (struct sockaddr *)&addr, sizeof(addr)) < 0) error("binding class socket");
 
-    // join the multicast group
+    /* Joining the multicast group */
     struct ip_mreq mreq;
     mreq.imr_multiaddr.s_addr = inet_addr(addr_ip);
     mreq.imr_interface.s_addr = INADDR_ANY;
-    if(setsockopt(sock, IPPROTO_IP, IP_ADD_MEMBERSHIP, &mreq, sizeof(mreq)) < 0) error("seting class socket options");
+    if(setsockopt(sock, IPPROTO_IP, IP_ADD_MEMBERSHIP, &mreq, sizeof(mreq)) < 0) error("setting up class socket options");
     
     struct class newClass;
     strcpy(newClass.name, name);
@@ -233,6 +278,7 @@ void add_class(char* name, char* addr_ip) {
     class_sockets.n_classes++;
 }
 
+
 /*******************************************************
  *
  *                    SYSTEM MANAGE
@@ -240,28 +286,31 @@ void add_class(char* name, char* addr_ip) {
  *******************************************************/
 
 /**
- * Closes the socket created if it exists.
+ * Closes all the sockets created.
  */
-void close_socket() {
-    if(fd) close(fd);
+void close_sockets() {
+    if(fdCreated) close(fd);
+    for(int i = 0; i < class_sockets.n_classes; i++) {
+        close(class_sockets.classes[i].socket);
+    }
 }
 
 /**
  * Handles SIGINT signal closing and freeing all the resorces.
  */
 void handle_sigint() {
-    close_socket();
+    close_sockets();
 
-    exit(0);
+    exit(EXIT_SUCCESS);
 }
 
 /**
  * Prints an error message and exists after closes the socket if it isn't closed yet.
  */
 void error(char *msg){
-    close_socket();
+    close_sockets();
 
     printf("Error: %s\n", msg);
-    exit(-1);
+    exit(EXIT_FAILURE);
 }
 
