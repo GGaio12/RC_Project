@@ -206,6 +206,10 @@ void process_list_subscribed() {
             char* token = strtok(buffer, " ");
             /* If server answers classes, add it to subscribed classes structure */
             if(strcmp(token, "CLASS") == 0) {
+                struct classes_sockets new_class_sockets;
+                class_sockets = new_class_sockets;
+                class_sockets.n_classes = 0;
+
                 char* name;
                 char* ip;
                 int i = 0;
@@ -304,6 +308,8 @@ void add_class(char* name, char* addr_ip) {
     strcpy(newClass.name, name);
     newClass.addr = addr;
     newClass.socket = sock;
+    if(newClass.socket > maxfdp) maxfdp = newClass.socket + 1;
+    else if(newClass.socket == maxfdp) maxfdp++;
     
     class_sockets.classes[class_sockets.n_classes] = newClass;
     class_sockets.n_classes++;
