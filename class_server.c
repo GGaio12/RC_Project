@@ -34,19 +34,20 @@
 
 #define BUF_SIZE 1024 // size of the buffer used for send and recive messages
 #define MAX_CLASSES 5
+#define MAX_NAME_LENGTH 30
 #define MULTICAST_PORT 9867
 #define BASE_MULTICAST_IP "239.0.0."
-#define SHM_PATH "./tmp/classes_shm"
-#define BIN_SEM_PATH "./tmp/mutex"
+#define SHM_PATH "classes_shm"
+#define BIN_SEM_PATH "mutex"
 
 /* Functions prototipes for tcp */
 int create_tcp_server(int TCP_SV_PORT, int LISTEN_NUMS);
 void request_login_tcp(int client_fd);
 void process_tcp_client(int client_fd);
-char* list_classes();
-char* list_subscribed();
-char* subscribe_class(char* name);
-char* create_class(char* name, char* size);
+void list_classes(char* message);
+void list_subscribed(char* message);
+void subscribe_class(char* message, char* name);
+void create_class(char* message, char* name, char* size);
 void send_text(char* name, char* text);
 int create_multicast_socket();
 struct sockaddr_in create_multicast_addr(char* multicast_ip);
@@ -322,6 +323,7 @@ void request_login_tcp(int client_fd) {
 
             if(strcmp(token, USER_PASSWORD) == 0) {
               USER_TYPE = strtok(NULL, ";");
+              USER_TYPE[strlen(USER_TYPE)-1] = 0;
               if(sprintf(message, "OK") < 0) {
                 fclose(configFile);
                 error("creating 'OK' login message");
@@ -357,107 +359,100 @@ void request_login_tcp(int client_fd) {
  * Process the tcp client requesting a login and then reading the commands sent.
  */
 void process_tcp_client(int client_fd) {
-  int nread;
-  char buffer[BUF_SIZE];
-  char message[BUF_SIZE + 18];
-  short waiting_commands = 1;
+    int nread;
+    char buffer[BUF_SIZE];
+    char message[BUF_SIZE + 18];
+    short waiting_commands = 1;
 
-  /* Requests the login first */
-  request_login_tcp(client_fd);
+    /* Requests the login first */
+    request_login_tcp(client_fd);
 
-  /* Reads all the commands sent. 'QUIT' to end the communication */
-  do {
-    /* Sends a message to the client for he to know the server is waiting a new command */
-    if(sprintf(message, "Waiting new command...") < 0) {
-      error("creating waitng new command message");
-    }
-    if(write(client_fd, message, 1 + strlen(message)) == -1) {
-      error("sending waitng new command message");
-    }
-
-    /* Wait for the client to send a new command and process it. If command is 'QUIT' ends the comunication */
+    /* Reads all the commands sent. 'QUIT' to end the communication */
     do {
-      nread = read(client_fd, buffer, BUF_SIZE-1);
-      if(nread < 0) error("read function (nread < 0)");
+        /* Sends a message to the client for he to know the server is waiting a new command */
+        if(sprintf(message, "Waiting new command...") < 0) {
+        error("creating waitng new command message");
+        }
+        if(write(client_fd, message, 1 + strlen(message)) == -1) {
+        error("sending waitng new command message");
+        }
 
-      if(nread > 0) {
-        buffer[nread] = '\0';
+        /* Wait for the client to send a new command and process it. If command is 'QUIT' ends the comunication */
+        do {
+            nread = read(client_fd, buffer, BUF_SIZE-1);
+            if(nread < 0) error("read function (nread < 0)");
 
-        /* Command identification */
-        if(strcmp(buffer, "QUIT") == 0) {
-            waiting_commands = 0;
-            break;
-        }
-        else if(strcmp(buffer, "LIST_CLASSES") == 0) {
-            if(sprintf(message, "%s", list_classes()) < 0) error("creating list_classes message");
-        }
-        else if(strcmp(buffer, "LIST_SUBSCRIBED") == 0) {
-            if(sprintf(message, "%s", list_subscribed()) < 0) error("creating list_subscribed message");
-        }
-        else {
-            char* token = strtok(buffer, " ");
-            char* name;
-            if(strcmp(token, "SUBSCRIBE_CLASS") == 0) {
-                token = strtok(NULL, " ");
-                if(token == NULL || strtok(NULL, " ") != NULL) {
-                    if(sprintf(message, "Invalid command. USE: SUBSCRIBE_CLASS {name}") < 0) error("creating invalid command message");
+            if(nread > 0) {
+                buffer[nread] = '\0';
+                puts(buffer);
+            
+                /* Command identification */
+                if(strcmp(buffer, "QUIT") == 0) {
+                    waiting_commands = 0;
+                    break;
                 }
+                else if(strcmp(buffer, "LIST_CLASSES") == 0) list_classes(message);
+                else if(strcmp(buffer, "LIST_SUBSCRIBED") == 0) list_subscribed(message);
                 else {
-                    if(sprintf(message, "%s", subscribe_class(token)) < 0) error("creating subscribe_class message");
+                    char* token = strtok(buffer, " ");
+                    char name[MAX_NAME_LENGTH];
+                    if(strcmp(token, "SUBSCRIBE_CLASS") == 0) {
+                        token = strtok(NULL, " ");
+                        if(token == NULL || strtok(NULL, " ") != NULL) {
+                            if(sprintf(message, "Invalid command. USE: SUBSCRIBE_CLASS {name}") < 0) error("creating invalid command message");
+                        }
+                        else subscribe_class(message, token);
+                    }
+                    else if(strcmp(token, "CREATE_CLASS") == 0 && strcmp(USER_TYPE, "professor") == 0) {
+                        token = strtok(NULL, " ");
+                        if(token == NULL) {
+                            if(sprintf(message, "Invalid command. USE: CREATE_CLASS {name} {size}") < 0) error("creating invalid command message");
+                        }
+                        else {
+                            strcpy(name, token);
+
+                            token = strtok(NULL, " ");
+                            if(token == NULL || strtok(NULL, " ") != NULL) {
+                                if(sprintf(message, "Invalid command. USE: CREATE_CLASS {name} {size}") < 0) error("creating invalid command message");
+                            }
+                            else create_class(message, name, token);
+                        }
+                    }
+                    else if(strcmp(token, "SEND") == 0 && strcmp(USER_TYPE, "professor") == 0) {
+                        char text[BUF_SIZE];
+                        if(token == NULL) {
+                            if(sprintf(message, "Invalid command. USE: SEND {name} {text to send}") < 0) error("creating invalid command message");
+                        }
+                        else {
+                            strcpy(name, token);
+
+                            if(strtok(NULL, " ") == NULL) {
+                                if(sprintf(message, "Invalid command. USE: SEND {name} {text to send}") < 0) error("creating invalid command message");
+                            }
+                            else {
+                                strncpy(text, buffer + strlen("SEND "), strlen(buffer) - strlen("SEND "));
+                                send_text(name, text);
+                                break;
+                            }
+                        }
+                    }
+                    else strcpy(message, "Message not recognized");
                 }
+
+                /* Sending message generated by the command */
+                if(write(client_fd, message, 1 + strlen(message)) == -1) error("sending message");
+
+                break;
             }
-            else if(strcmp(token, "CREATE_CLASS") == 0 && strcmp(USER_TYPE, "professor") == 0) {
-                if(token == NULL) {
-                    if(sprintf(message, "Invalid command. USE: CREATE_CLASS {name} {size}") < 0) error("creating invalid command message");
-                }
-                else {
-                    strcpy(name, token);
-
-                    token = strtok(NULL, " ");
-                    if(token == NULL || strtok(NULL, " ") != NULL) {
-                        if(sprintf(message, "Invalid command. USE: CREATE_CLASS {name} {size}") < 0) error("creating invalid command message");
-                    }
-                    else {
-                        if(sprintf(message, "%s", create_class(name, token)) < 0) error("creating create_class message");
-                    }
-                }
-            }
-            else if(strcmp(token, "SEND") == 0 && strcmp(USER_TYPE, "professor") == 0) {
-                char* text;
-                if(token == NULL) {
-                    if(sprintf(message, "Invalid command. USE: SEND {name} {text to send}") < 0) error("creating invalid command message");
-                }
-                else {
-                    strcpy(name, token);
-
-                    if(strtok(NULL, " ") == NULL) {
-                        if(sprintf(message, "Invalid command. USE: SEND {name} {text to send}") < 0) error("creating invalid command message");
-                    }
-                    else {
-                        strncpy(text, buffer + strlen("SEND "), strlen(buffer) - strlen("SEND "));
-                        send_text(name, text);
-                        break;
-                    }
-                }
-            }
-            else strcpy(message, "Message not recognized");
-        }
-
-        /* Sending message generated by the command */
-        if(write(client_fd, message, 1 + strlen(message)) == -1) error("sending message");
-
-        break;
-      }
-    } while(1);
-  } while(waiting_commands);
-  close(client_fd); // closes the client socket
+        } while(1);
+    } while(waiting_commands);
+    close(client_fd); // closes the client socket
 }
 
 /**
  * Creates and returns a message that indicates all avaiable classes.
  */
-char* list_classes() {
-    char* message;
+void list_classes(char* message) {
     strcpy(message, "CLASS ");
 
     int i = 0;
@@ -471,15 +466,13 @@ char* list_classes() {
     sem_post(mutex);
 
     if(i == 0) strcpy(message, "NO CLASSES CREATED");
-    return message;
 }
 
 /**
  * Creates and returns a message that indicates all classes that the client is subscribed.
  */
-char* list_subscribed() {
+void list_subscribed(char* message) {
     bool sub;
-    char* message;
     strcpy(message, "CLASS ");
     
     int i = 0;
@@ -510,15 +503,12 @@ char* list_subscribed() {
 
     if(i == 0) strcpy(message, "NO CLASSES CREATED");
     else if(j == 0) strcpy(message, "NO CLASSES SUBSCRIBED");
-    return message;
 }
 
 /**
  * Susbscribe a class with a specific 'name' and return a message 'ACCEPTED {multicast}' or 'REJECTED'.
  */
-char* subscribe_class(char* name) {
-    char* message;
-
+void subscribe_class(char* message, char* name) {
     bool found = false;
     bool already_in = false;
     int i = 0;
@@ -561,48 +551,51 @@ char* subscribe_class(char* name) {
     if(i == 0) strcpy(message, "NO CLASSES CREATED");
     else if(!found) strcpy(message, "CLASS NOT FOUND");
     else if(already_in) strcpy(message, "ALREADY SUBSCRIBED IN CLASS");
-    return message;
 }
 
 /**
  * Creates a new class with a specific 'name' and 'size' and return a message 'OK {multicast}'.
  */
-char* create_class(char* name, char* size) {
-    char* message;
+void create_class(char* message, char* name, char* size) {
     bool have_same_name = false;
-
     sem_wait(mutex);
     /* Verifies if there are space to create a new class */
     if(shm_ptr->n_classes >= MAX_CLASSES) strcpy(message, "REJECTED: MAX CLASSES REACHED");
     else {
         /* First verifies if already exist a class with the same name */
         for(int i = 0; i < shm_ptr->n_classes; i++) {
+            puts("test");
             if(strcmp(shm_ptr->classes[i].name, name) == 0) {
+                puts("test2");
                 strcpy(message, "REJECTED: ALREADY EXIST A CLASS WITH THAT NAME");
                 have_same_name = true;
                 break;
             }
         }
 
+        /* Creating a new class */
         if(!have_same_name) {
-            /* Creating a new class */
-            struct Class newClass;
-            char* str_aux;
-            if(sprintf(str_aux, "%d", (shm_ptr->n_classes + 1)) < 0) error("Creating str_aux");
+            /* Allocating space */
+            shm_ptr->classes[shm_ptr->n_classes].members_user_names = (char**) malloc(atoi(size) * sizeof(char*));
+            shm_ptr->classes[shm_ptr->n_classes].members_user_names[0] = (char*) malloc(MAX_NAME_LENGTH * sizeof(char));
+            shm_ptr->classes[shm_ptr->n_classes].name = (char*) malloc(MAX_NAME_LENGTH * sizeof(char));
+
+            /* Creating aux variables */
+            char str_aux[6];
             char newIP[16];
-            strcpy(newIP, strcat(BASE_MULTICAST_IP, str_aux));
-            strcpy(newClass.name, name);                        // Class name
-            strcpy(newClass.ip_address, newIP);                 // Multicast IP
+            if(sprintf(str_aux, "%d", (shm_ptr->n_classes + 1)) < 0) error("Creating str_aux");
+            strcpy(newIP, BASE_MULTICAST_IP);
+            strcat(newIP, str_aux);
 
-            newClass.socket = create_multicast_socket();        // Multicast socket
-            newClass.addr = create_multicast_addr(newIP);       // Multicast address
+            /* Assigning values to the class */
+            strncpy(shm_ptr->classes[shm_ptr->n_classes].name, name, MAX_NAME_LENGTH);      // Class name
+            strncpy(shm_ptr->classes[shm_ptr->n_classes].ip_address, newIP, 15);            // Multicast IP
+            shm_ptr->classes[shm_ptr->n_classes].socket = create_multicast_socket();        // Multicast socket
+            shm_ptr->classes[shm_ptr->n_classes].addr = create_multicast_addr(newIP);       // Multicast address
+            shm_ptr->classes[shm_ptr->n_classes].max_n_members = atoi(size);                // Class max number of members
+            shm_ptr->classes[shm_ptr->n_classes].n_members = 1;                             // Adding the professor to the number of members
+            strncpy(shm_ptr->classes[shm_ptr->n_classes].members_user_names[0], USER_NAME, strlen(USER_NAME));  // Adding the professor user name to the members user names
 
-            newClass.max_n_members = atoi(size);                // Class max number of members
-            newClass.n_members = 1;                             // Adding the professor to the number of members
-            strcpy(newClass.members_user_names[0], USER_NAME);  // Adding the professor user name to the members user names
-
-            /* Adding the new class to the classes in shared memory */
-            shm_ptr->classes[shm_ptr->n_classes] = newClass;
             shm_ptr->n_classes++;
 
             strcpy(message, "OK ");
@@ -610,8 +603,6 @@ char* create_class(char* name, char* size) {
         }
     }
     sem_post(mutex);
-
-    return message;
 }
 
 /**
@@ -930,7 +921,10 @@ void free_all_resources() {
     free_credential_vars();
     close_sockets();
     close_shm();
-    sem_close(mutex);
+    if(mutexCreated) {
+        sem_close(mutex);
+        sem_unlink(BIN_SEM_PATH);
+    }
 }
 
 /**

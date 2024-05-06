@@ -97,6 +97,7 @@ int main(int argc, char *argv[]) {
 
         if(nready > 0) {
             if(FD_ISSET(fd, &read_set)) {
+                memset(buffer, 0, sizeof(buffer));
                 nread = read(fd, buffer, BUF_SIZE-1);
                 if(nread < 0) error("read function (nread < 0)");
 
@@ -123,11 +124,14 @@ int main(int argc, char *argv[]) {
                     }
                     /* Otherwise the server is waiting for a new command or answering */
                     else if(strcmp(buffer, "Waiting new command...") == 0) {
+                        puts("aa");
+                        memset(message, 0, sizeof(message));
                         fgets(message, sizeof(message), stdin);
                         message[strcspn(message, "\n")] = 0;
 
+                        puts(message);
                         if(write(fd, message, 1 + strlen(message)) == -1) error("sending new command message");
-
+                        puts("a");
                         if(strcmp(message, "QUIT") == 0) break;
                         else if(strcmp(message, "LIST_CLASSES") == 0) continue;
                         else if(strcmp(message, "LIST_SUBSCRIBED") == 0) process_list_subscribed();

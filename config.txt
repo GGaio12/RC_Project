@@ -1,0 +1,3 @@
+user1;123;aluno
+user2;234;professor
+user3;345;administrador
