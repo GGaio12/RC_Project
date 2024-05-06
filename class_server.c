@@ -6,6 +6,7 @@
  * name and password, they can do every command their type can do by sending
  * the command to the server.
  * USE: >class_server <CLASS_PORT> <CONFIG_PORT> <CONFIG_FILE_NAME>
+ * Compile: gcc class_server.c -lpthread -Wextra -Wall -lm -lrt -o class_server 
  *******************************************************************************/
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -72,7 +73,7 @@ typedef struct Class {
     int max_n_members;
     int n_members;
     char** members_user_names;
-};
+}Class;
 
 typedef struct shmStruct {
     struct Class classes[MAX_CLASSES];
@@ -172,24 +173,26 @@ int main(int argc, char* argv[]) {
         FD_SET(tcp_fd, &read_set);
         FD_SET(udp_s, &read_set);
 
-        /* Selects the ready descriptor (the socket with information in) */
+        /* Selects the ready descriptor (the socket with information in) */ /* Warning unsued nready */
         int nready = select(maxfdp, &read_set, NULL, NULL, NULL);
 
-        /* If there is information in the tcp socket it accept the connection */
-        if(FD_ISSET(tcp_fd, &read_set)) {
-            tcp_client = accept(tcp_fd,(struct sockaddr *)&client_addr,(socklen_t *)&client_addr_size);
+        if(nready > 0) {
+            /* If there is information in the tcp socket it accept the connection */
+            if(FD_ISSET(tcp_fd, &read_set)) {
+                tcp_client = accept(tcp_fd,(struct sockaddr *)&client_addr,(socklen_t *)&client_addr_size);
 
-            /* Creates a child process to process the communication with the user */
-            if(fork() == 0) {
-                close(tcp_fd);
-                process_tcp_client(tcp_client);
-                exit(EXIT_SUCCESS);
+                /* Creates a child process to process the communication with the user */
+                if(fork() == 0) {
+                    close(tcp_fd);
+                    process_tcp_client(tcp_client);
+                    exit(EXIT_SUCCESS);
+                }
             }
-        }
 
-        /* If there is information in the udp socket it receive and process the communication */
-        if(FD_ISSET(udp_s, &read_set)) {
-            process_udp_client(udp_s);
+            /* If there is information in the udp socket it receive and process the communication */
+            if(FD_ISSET(udp_s, &read_set)) {
+                process_udp_client(udp_s);
+            }
         }
     }
 
@@ -386,10 +389,10 @@ void process_tcp_client(int client_fd) {
             break;
         }
         else if(strcmp(buffer, "LIST_CLASSES") == 0) {
-            if(sprintf(message, list_classes()) < 0) error("creating list_classes message");
+            if(sprintf(message, "%s", list_classes()) < 0) error("creating list_classes message");
         }
         else if(strcmp(buffer, "LIST_SUBSCRIBED") == 0) {
-            if(sprintf(message, list_subscribed()) < 0) error("creating list_subscribed message");
+            if(sprintf(message, "%s", list_subscribed()) < 0) error("creating list_subscribed message");
         }
         else {
             char* token = strtok(buffer, " ");
@@ -400,7 +403,7 @@ void process_tcp_client(int client_fd) {
                     if(sprintf(message, "Invalid command. USE: SUBSCRIBE_CLASS {name}") < 0) error("creating invalid command message");
                 }
                 else {
-                    if(sprintf(message, subscribe_class(token)) < 0) error("creating subscribe_class message");
+                    if(sprintf(message, "%s", subscribe_class(token)) < 0) error("creating subscribe_class message");
                 }
             }
             else if(strcmp(token, "CREATE_CLASS") == 0 && strcmp(USER_TYPE, "professor") == 0) {
@@ -415,7 +418,7 @@ void process_tcp_client(int client_fd) {
                         if(sprintf(message, "Invalid command. USE: CREATE_CLASS {name} {size}") < 0) error("creating invalid command message");
                     }
                     else {
-                        if(sprintf(message, create_class(name, token)) < 0) error("creating create_class message");
+                        if(sprintf(message, "%s", create_class(name, token)) < 0) error("creating create_class message");
                     }
                 }
             }
@@ -584,7 +587,10 @@ char* create_class(char* name, char* size) {
         if(!have_same_name) {
             /* Creating a new class */
             struct Class newClass;
-            char newIP[16] = strcat(BASE_MULTICAST_IP, itoa((shm_ptr->n_classes + 1)));
+            char* str_aux;
+            if(sprintf(str_aux, "%d", (shm_ptr->n_classes + 1)) < 0) error("Creating str_aux");
+            char newIP[16];
+            strcpy(newIP, strcat(BASE_MULTICAST_IP, str_aux));
             strcpy(newClass.name, name);                        // Class name
             strcpy(newClass.ip_address, newIP);                 // Multicast IP
 
