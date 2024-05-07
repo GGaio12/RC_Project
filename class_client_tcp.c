@@ -20,6 +20,7 @@
 
 #define BUF_SIZE 1024        // size of the buffer used for send and recive messages
 #define MAX_SUB_CLASSES 5    // Max number of multicast sockets
+#define MAX_NAME_LENGTH 30
 #define MULTICAST_PORT 9867  // Multicast port of the classes
 
 /* TCP process help functions */
@@ -49,6 +50,7 @@ typedef struct classes_sockets {
 
 /* Initializing useful variables */
 char buffer[BUF_SIZE];
+char buffer_aux [BUF_SIZE];
 char message[BUF_SIZE];
 int nread;
 int maxfdp;
@@ -97,7 +99,6 @@ int main(int argc, char *argv[]) {
 
         if(nready > 0) {
             if(FD_ISSET(fd, &read_set)) {
-                memset(buffer, 0, sizeof(buffer));
                 nread = read(fd, buffer, BUF_SIZE-1);
                 if(nread < 0) error("read function (nread < 0)");
 
@@ -123,15 +124,12 @@ int main(int argc, char *argv[]) {
                         else if(strcmp(buffer, "OK") == 0) loged_in = true;  
                     }
                     /* Otherwise the server is waiting for a new command or answering */
-                    else if(strcmp(buffer, "Waiting new command...") == 0) {
-                        puts("aa");
-                        memset(message, 0, sizeof(message));
+                    else if(strncmp(buffer, "Waiting new command...", strlen("Waiting new command...")) == 0) {
                         fgets(message, sizeof(message), stdin);
                         message[strcspn(message, "\n")] = 0;
 
-                        puts(message);
                         if(write(fd, message, 1 + strlen(message)) == -1) error("sending new command message");
-                        puts("a");
+
                         if(strcmp(message, "QUIT") == 0) break;
                         else if(strcmp(message, "LIST_CLASSES") == 0) continue;
                         else if(strcmp(message, "LIST_SUBSCRIBED") == 0) process_list_subscribed();
@@ -148,7 +146,7 @@ int main(int argc, char *argv[]) {
                     }
                 }
             }
-
+            
             for(int i = 0; i < class_sockets.n_classes; i++) {
                 if(FD_ISSET(class_sockets.classes[i].socket, &read_set)) {
                     do {
@@ -209,7 +207,8 @@ int create_socket(char* server_addr, char* server_port) {
 void process_list_subscribed() {
     /* Waits server answer */
     do {
-        nread = read(fd, buffer, BUF_SIZE-1);
+        memset(buffer, 0, sizeof(buffer));
+        int nread = read(fd, buffer, BUF_SIZE-1);
         if(nread < 0) error("read function (nread < 0)");
 
         if(nread > 0) {
@@ -225,19 +224,28 @@ void process_list_subscribed() {
                 class_sockets = new_class_sockets;
                 class_sockets.n_classes = 0;
 
-                char* name;
-                char* ip;
-                int i = 0;
-                while((token = strtok(NULL, ", ")) != NULL) {
-                    if(i >= MAX_SUB_CLASSES) break;
+                while((token = strtok(NULL, " ")) != NULL) {
+                    char name[MAX_NAME_LENGTH];
+                    char ip[16];
+                    int i = 0;
                     int j = 0;
-                    while(token[j] != '/') j++;
-                    strncpy(name, token, j);
-                    strncpy(ip, token+j+1, strlen(token)-j-1);
+                    while((token[i] != '/') && (token[i] != '\0')) {
+                        name[i] = token[i];
+                        i++;
+                    }
+                    name[i] = '\0';
+                    if(token[i] == '/') {
+                        i++;
+                        while(token[i] != '\0') {
+                            ip[j] = token[i];
+                            i++;
+                            j++;
+                        }
+                        ip[j] = '\0';
+                    }
                     add_class(name, ip);
                 }
             }
-
             break;
         }
     } while(true);
@@ -264,6 +272,8 @@ void process_subscribe_class(char* name) {
                 char* addr_ip = strtok(NULL, " ");
                 add_class(name, addr_ip);
             }
+
+            break;
         }
     } while(true);
 }
@@ -289,6 +299,8 @@ void process_create_class(char* name) {
                 char* addr_ip = strtok(NULL, " ");
                 add_class(name, addr_ip);
             }
+
+            break;
         }
     } while(true);
 }
@@ -301,6 +313,9 @@ void add_class(char* name, char* addr_ip) {
 
     int sock = socket(AF_INET, SOCK_DGRAM, 0);
     if(sock < 0) error("class socket creation");
+
+    int opt = 1;
+    if (setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) error("setting SO_REUSEADDR option");
 
     struct sockaddr_in addr;
 
@@ -319,14 +334,14 @@ void add_class(char* name, char* addr_ip) {
     mreq.imr_interface.s_addr = INADDR_ANY;
     if(setsockopt(sock, IPPROTO_IP, IP_ADD_MEMBERSHIP, &mreq, sizeof(mreq)) < 0) error("setting up class socket options");
     
-    struct class newClass;
-    strcpy(newClass.name, name);
-    newClass.addr = addr;
-    newClass.socket = sock;
-    if(newClass.socket > maxfdp) maxfdp = newClass.socket + 1;
-    else if(newClass.socket == maxfdp) maxfdp++;
-    
-    class_sockets.classes[class_sockets.n_classes] = newClass;
+    class_sockets.classes[class_sockets.n_classes].name = (char*) malloc(MAX_NAME_LENGTH * sizeof(char));
+    if(class_sockets.classes[class_sockets.n_classes].name == NULL) error("malloc failed");
+
+    strncpy(class_sockets.classes[class_sockets.n_classes].name, name, MAX_NAME_LENGTH);
+    class_sockets.classes[class_sockets.n_classes].addr = addr;
+    class_sockets.classes[class_sockets.n_classes].socket = sock;
+    if(class_sockets.classes[class_sockets.n_classes].socket > maxfdp) maxfdp = class_sockets.classes[class_sockets.n_classes].socket + 1;
+    else if(class_sockets.classes[class_sockets.n_classes].socket == maxfdp) maxfdp++;
     class_sockets.n_classes++;
 }
 

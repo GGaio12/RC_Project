@@ -35,6 +35,7 @@
 #define BUF_SIZE 1024 // size of the buffer used for send and recive messages
 #define MAX_CLASSES 5
 #define MAX_NAME_LENGTH 30
+#define MAX_CLASS_SIZE 50
 #define MULTICAST_PORT 9867
 #define BASE_MULTICAST_IP "239.0.0."
 #define SHM_PATH "classes_shm"
@@ -67,13 +68,13 @@ void handle_sigint();
 void error(char *msg);
 
 typedef struct Class {
-    char* name;
+    char name[MAX_NAME_LENGTH];
     char ip_address[16];
     int socket;
     struct sockaddr_in addr;
     int max_n_members;
     int n_members;
-    char** members_user_names;
+    char members_user_names[MAX_CLASS_SIZE][MAX_NAME_LENGTH];
 }Class;
 
 typedef struct shmStruct {
@@ -122,10 +123,6 @@ int main(int argc, char* argv[]) {
     TCP_SV_PORT = atoi(argv[1]);
     UDP_SV_PORT = atoi(argv[2]);
     CONFIG_FILE_NAME = argv[3];
-
-    USER_NAME = (char*) malloc(sizeof(char)*30);
-    USER_PASSWORD = (char*) malloc(sizeof(char)*30);
-    USER_TYPE = (char*) malloc(sizeof(char)*20);
 
     fd_set read_set;
 
@@ -359,6 +356,10 @@ void request_login_tcp(int client_fd) {
  * Process the tcp client requesting a login and then reading the commands sent.
  */
 void process_tcp_client(int client_fd) {
+    USER_NAME = (char*) malloc(sizeof(char)*30);
+    USER_PASSWORD = (char*) malloc(sizeof(char)*30);
+    USER_TYPE = (char*) malloc(sizeof(char)*20);
+
     int nread;
     char buffer[BUF_SIZE];
     char message[BUF_SIZE + 18];
@@ -370,12 +371,8 @@ void process_tcp_client(int client_fd) {
     /* Reads all the commands sent. 'QUIT' to end the communication */
     do {
         /* Sends a message to the client for he to know the server is waiting a new command */
-        if(sprintf(message, "Waiting new command...") < 0) {
-        error("creating waitng new command message");
-        }
-        if(write(client_fd, message, 1 + strlen(message)) == -1) {
-        error("sending waitng new command message");
-        }
+        if(sprintf(message, "Waiting new command...") < 0) error("creating waitng new command message");
+        if(write(client_fd, message, 1 + strlen(message)) == -1) error("sending waitng new command message");
 
         /* Wait for the client to send a new command and process it. If command is 'QUIT' ends the comunication */
         do {
@@ -384,7 +381,6 @@ void process_tcp_client(int client_fd) {
 
             if(nread > 0) {
                 buffer[nread] = '\0';
-                puts(buffer);
             
                 /* Command identification */
                 if(strcmp(buffer, "QUIT") == 0) {
@@ -424,13 +420,19 @@ void process_tcp_client(int client_fd) {
                             if(sprintf(message, "Invalid command. USE: SEND {name} {text to send}") < 0) error("creating invalid command message");
                         }
                         else {
+                            token = strtok(NULL, " ");
                             strcpy(name, token);
 
-                            if(strtok(NULL, " ") == NULL) {
+                            int text_start = strlen("SEND ") + strlen(name) + 1; // +1 for the space between name and text
+                            int text_length = nread - 1 - text_start;
+
+                            if(text_length <= 0) {
                                 if(sprintf(message, "Invalid command. USE: SEND {name} {text to send}") < 0) error("creating invalid command message");
                             }
                             else {
-                                strncpy(text, buffer + strlen("SEND "), strlen(buffer) - strlen("SEND "));
+                                strncpy(text, buffer + text_start, nread-1);
+                                text[text_length] = '\0';
+
                                 send_text(name, text);
                                 break;
                             }
@@ -530,27 +532,25 @@ void subscribe_class(char* message, char* name) {
                 i++;
                 break;
             }
-
             /* Verifies if the class still have space for new members */
             if(shm_ptr->classes[i].n_members < shm_ptr->classes[i].max_n_members) {
                 /* Adds the student user name to the members user name */
-                strcpy(shm_ptr->classes[i].members_user_names[shm_ptr->classes[i].n_members], USER_NAME);
+                strncpy(shm_ptr->classes[i].members_user_names[shm_ptr->classes[i].n_members], USER_NAME, MAX_NAME_LENGTH-1);
                 shm_ptr->classes[i].n_members++;
 
                 strcpy(message, "ACCEPTED ");
                 strcat(message, shm_ptr->classes[i].ip_address);
             }
-            else strcpy(message, "REJECTED");
+            else strcpy(message, "REJECTED: CLASS ALREADY FULL");
             i++;
             break;
         }
         i++;
     }
     sem_post(mutex);
-
-    if(i == 0) strcpy(message, "NO CLASSES CREATED");
-    else if(!found) strcpy(message, "CLASS NOT FOUND");
-    else if(already_in) strcpy(message, "ALREADY SUBSCRIBED IN CLASS");
+    if(i == 0) strcpy(message, "REJECTED: NO CLASSES CREATED");
+    else if(!found) strcpy(message, "REJECTED: CLASS NOT FOUND");
+    else if(already_in) strcpy(message, "REJECTED: ALREADY SUBSCRIBED IN CLASS");
 }
 
 /**
@@ -560,33 +560,28 @@ void create_class(char* message, char* name, char* size) {
     bool have_same_name = false;
     sem_wait(mutex);
     /* Verifies if there are space to create a new class */
-    if(shm_ptr->n_classes >= MAX_CLASSES) strcpy(message, "REJECTED: MAX CLASSES REACHED");
+    if(strlen(name) >= MAX_NAME_LENGTH) strcpy(message, "REJECTED: NAME IS TOO BIG");
+    else if(atoi(size) >= MAX_CLASS_SIZE) strcpy(message, "REJECTED: SIZE EXCEEDS MAX SIZE");
+    else if(atoi(size) < 1) strcpy(message, "REJECTED: SIZE NEEDS TO BE >= 1");
+    else if(shm_ptr->n_classes >= MAX_CLASSES) strcpy(message, "REJECTED: MAX CLASSES REACHED");
     else {
         /* First verifies if already exist a class with the same name */
         for(int i = 0; i < shm_ptr->n_classes; i++) {
-            puts("test");
             if(strcmp(shm_ptr->classes[i].name, name) == 0) {
-                puts("test2");
                 strcpy(message, "REJECTED: ALREADY EXIST A CLASS WITH THAT NAME");
                 have_same_name = true;
                 break;
             }
         }
-
+        
         /* Creating a new class */
         if(!have_same_name) {
-            /* Allocating space */
-            shm_ptr->classes[shm_ptr->n_classes].members_user_names = (char**) malloc(atoi(size) * sizeof(char*));
-            shm_ptr->classes[shm_ptr->n_classes].members_user_names[0] = (char*) malloc(MAX_NAME_LENGTH * sizeof(char));
-            shm_ptr->classes[shm_ptr->n_classes].name = (char*) malloc(MAX_NAME_LENGTH * sizeof(char));
-
             /* Creating aux variables */
-            char str_aux[6];
+            char str_aux[2];
             char newIP[16];
-            if(sprintf(str_aux, "%d", (shm_ptr->n_classes + 1)) < 0) error("Creating str_aux");
+            str_aux[0] = shm_ptr->n_classes + 1 + '0';
             strcpy(newIP, BASE_MULTICAST_IP);
             strcat(newIP, str_aux);
-
             /* Assigning values to the class */
             strncpy(shm_ptr->classes[shm_ptr->n_classes].name, name, MAX_NAME_LENGTH);      // Class name
             strncpy(shm_ptr->classes[shm_ptr->n_classes].ip_address, newIP, 15);            // Multicast IP
@@ -594,10 +589,9 @@ void create_class(char* message, char* name, char* size) {
             shm_ptr->classes[shm_ptr->n_classes].addr = create_multicast_addr(newIP);       // Multicast address
             shm_ptr->classes[shm_ptr->n_classes].max_n_members = atoi(size);                // Class max number of members
             shm_ptr->classes[shm_ptr->n_classes].n_members = 1;                             // Adding the professor to the number of members
-            strncpy(shm_ptr->classes[shm_ptr->n_classes].members_user_names[0], USER_NAME, strlen(USER_NAME));  // Adding the professor user name to the members user names
-
+            strncpy(shm_ptr->classes[shm_ptr->n_classes].members_user_names[0], USER_NAME, MAX_NAME_LENGTH-1);  // Adding the professor user name to the members user names
+            
             shm_ptr->n_classes++;
-
             strcpy(message, "OK ");
             strcat(message, newIP);
         }
@@ -812,52 +806,52 @@ void request_login_udp(int udp_fd, struct sockaddr_in client_addr, socklen_t cli
  * Process the udp client requesting a login and then reading the commands sent.
  */
 void process_udp_client(int udp_fd) {
-  struct sockaddr_in client_addr;
-  socklen_t client_addr_size = sizeof(client_addr);
-  int nread;
-  char buffer[BUF_SIZE];
-  char message[BUF_SIZE];
-  short waiting_commands = 1;
+    USER_NAME = (char*) malloc(sizeof(char)*30);
+    USER_PASSWORD = (char*) malloc(sizeof(char)*30);
+    USER_TYPE = (char*) malloc(sizeof(char)*20);
 
-  nread = recvfrom(udp_fd, buffer, BUF_SIZE-1, 0, (struct sockaddr*)&client_addr, &client_addr_size);
-  if(nread < 0) error("read function (nread < 0)");
+    struct sockaddr_in client_addr;
+    socklen_t client_addr_size = sizeof(client_addr);
+    int nread;
+    char buffer[BUF_SIZE];
+    char message[BUF_SIZE];
+    short waiting_commands = 1;
 
-  if(nread > 0) {
-    buffer[nread] = '\0';
+    nread = recvfrom(udp_fd, buffer, BUF_SIZE-1, 0, (struct sockaddr*)&client_addr, &client_addr_size);
+    if(nread < 0) error("read function (nread < 0)");
 
-    if(strcmp(buffer, "Connecting message...") != 0) error("connecting message not correct");
-  }
-    
-  /* Requests the login first */
-  request_login_udp(udp_fd, client_addr, client_addr_size);
-
-  /* Reads all the commands sent. 'QUIT' to end the communication */
-  do {
-    /* Sends a message to the client for he to know the server is waiting a new command */
-    if(sprintf(message, "Waiting new command...") < 0) {
-      error("creating waitng new command message");
-    }
-    if(sendto(udp_fd, message, strlen(message), 0, (struct sockaddr*)&client_addr, client_addr_size) == -1) {
-      error("sending waitng new command message");
-    }
-    
-    /* Wait for the client to send a new command and process it. If command is 'QUIT' ends the comunication */
-    do {
-      nread = recvfrom(udp_fd, buffer, BUF_SIZE-1, 0, (struct sockaddr*)&client_addr, &client_addr_size);
-      if(nread < 0) error("read function (nread < 0)");
-
-      if(nread > 0) {
+    if(nread > 0) {
         buffer[nread] = '\0';
 
-        printf("Command %s received", buffer);
-        fflush(stdout);
+        if(strcmp(buffer, "Connecting message...") != 0) error("connecting message not correct");
+    }
+    
+    /* Requests the login first */
+    request_login_udp(udp_fd, client_addr, client_addr_size);
 
-        if(strcmp(buffer, "QUIT") == 0) waiting_commands = 0;
+    /* Reads all the commands sent. 'QUIT' to end the communication */
+    do {
+        /* Sends a message to the client for he to know the server is waiting a new command */
+        if(sprintf(message, "Waiting new command...") < 0) error("creating waitng new command message");
+        if(sendto(udp_fd, message, strlen(message), 0, (struct sockaddr*)&client_addr, client_addr_size) == -1) error("sending waitng new command message");
+    
+        /* Wait for the client to send a new command and process it. If command is 'QUIT' ends the comunication */
+        do {
+            nread = recvfrom(udp_fd, buffer, BUF_SIZE-1, 0, (struct sockaddr*)&client_addr, &client_addr_size);
+            if(nread < 0) error("read function (nread < 0)");
 
-        break;
-      }
-    } while(1);
-  } while(waiting_commands);
+            if(nread > 0) {
+                buffer[nread] = '\0';
+
+                printf("Command %s received", buffer);
+                fflush(stdout);
+
+                if(strcmp(buffer, "QUIT") == 0) waiting_commands = 0;
+
+                break;
+            }
+        } while(1);
+    } while(waiting_commands);
 }
 
 
@@ -880,13 +874,11 @@ void free_credential_vars() {
  * Closes all the sockets created if they exist.
  */
 void close_sockets() {
-  if(tcp_fdCreated) close(tcp_fd);
-  if(udp_sCreated) close(udp_s);
-  sem_wait(mutex);
-  for(int i = 0; i < shm_ptr->n_classes; i++) {
-    close(shm_ptr->classes[i].socket);
-  }
-  sem_post(mutex);
+    if(tcp_fdCreated) close(tcp_fd);
+    if(udp_sCreated) close(udp_s);
+    int wait = sem_trywait(mutex);
+    for(int i = 0; i < shm_ptr->n_classes; i++) close(shm_ptr->classes[i].socket);
+    if(wait == 0) sem_post(mutex);
 }
 
 /**
