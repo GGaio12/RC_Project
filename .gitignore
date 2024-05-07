@@ -1,3 +1,7 @@
 *.o
 
-sysv
+class_server
+
+class_client_tcp
+
+class_client_udp
