@@ -33,13 +33,16 @@
 #include <stdbool.h>
 
 #define BUF_SIZE 1024 // size of the buffer used for send and recive messages
-#define MAX_CLASSES 5
 #define MAX_NAME_LENGTH 30
+#define MAX_PASS_LENGTH 20
+#define MAX_TYPE_LENGTH 20
+#define MAX_CLASSES 5
 #define MAX_CLASS_SIZE 50
 #define MULTICAST_PORT 9867
 #define BASE_MULTICAST_IP "239.0.0."
 #define SHM_PATH "classes_shm"
 #define BIN_SEM_PATH "mutex"
+#define FILE_BIN_SEM_PATH "file_mutex"
 
 /* Functions prototipes for tcp */
 int create_tcp_server(int TCP_SV_PORT, int LISTEN_NUMS);
@@ -95,17 +98,22 @@ int tcp_client, tcp_fd, udp_s;
 bool tcp_fdCreated = false, udp_sCreated = false;
 
 /* Variables that will store the user information for future use if need */
-char* USER_NAME;
-char* USER_PASSWORD;
-char* USER_TYPE;
+char USER_NAME[MAX_NAME_LENGTH];
+char USER_PASSWORD[MAX_PASS_LENGTH];
+char USER_TYPE[MAX_TYPE_LENGTH];
+bool admIN = false;
 
 shm* shm_ptr;
 int shm_size = sizeof(shm);
 int shm_fd;
 bool shm_fdOpened = false, classesMaped = false;
 
+FILE* configFile;
+
 sem_t* mutex;
 bool mutexCreated = false;
+sem_t* file_mutex;
+bool file_mutexCreated = false;
 
 /**
  * Main function.
@@ -138,14 +146,14 @@ int main(int argc, char* argv[]) {
     classesMaped = true;
     shm_ptr->n_classes = 0;
 
-    /* Initializing message queue named semaphore */
+    /* Initializing named semaphores */
     mutex = sem_open(BIN_SEM_PATH, O_CREAT, 0666, 1);
     if(mutex == SEM_FAILED) error("Opening binary semaphore (mutex)");
     mutexCreated = true;
 
-
-    /******************** TODO --> read file with shared memory saved if exits to update in memory *****************/
-
+    file_mutex = sem_open(FILE_BIN_SEM_PATH, O_CREAT, 0666, 1);
+    if(file_mutex == SEM_FAILED) error("Opening binary semaphore (file_mutex)");
+    file_mutexCreated = true;
 
     /* Client socket address creation */
     struct sockaddr_in client_addr;
@@ -166,7 +174,7 @@ int main(int argc, char* argv[]) {
     maxfdp++;
 
     /* Starts lisning and process all informations that were received in the two sockets */
-    while(1) {
+    while(true) {
         /* Sets the tcp and udp fds in the read set */
         FD_SET(tcp_fd, &read_set);
         FD_SET(udp_s, &read_set);
@@ -234,136 +242,123 @@ int create_tcp_server(int TCP_SV_PORT, int LISTEN_NUMS) {
  * Requests and wait for a correct login by the command LOGIN <username> <password> of a tcp client.
  */
 void request_login_tcp(int client_fd) {
-  /* Initializations */
-  int nread;
-  FILE* configFile;
-  short checking = 1;
-  short in_file;
-  char buffer[BUF_SIZE];
-  char authentication[BUF_SIZE];
-  char message[BUF_SIZE];
-  char* token;
+    /* Initializations */
+    int nread;
+    bool checking = true;
+    bool in_file;
+    char buffer[BUF_SIZE];
+    char authentication[BUF_SIZE];
+    char message[BUF_SIZE];
+    char* token;
 
-  /* Message that asks the user about the login credentials */
-  const char login_message[] = "Please enter your LOGIN credentials (LOGIN <username> <password>):";
+    /* Message that asks the user about the login credentials */
+    const char login_message[] = "Please enter your LOGIN credentials (LOGIN <username> <password>):";
 
-  /* Loop that ends when the login was successfully done or the user quit */
-  while(checking) {
-    /* Writes the login message */
-    if(write(client_fd, login_message, 1 + strlen(login_message)) == -1) {
-      error("sending login message");
-    }
+    /* Loop that ends when the login was successfully done or the user quit */
+    while(checking) {
+        /* Writes the login message */
+        if(write(client_fd, login_message, 1 + strlen(login_message)) == -1) error("sending login message");
 
-    /* Loop that starts reading until the client send the login command */
-    do {
-      nread = read(client_fd, buffer, BUF_SIZE-1);
-      if(nread < 0) error("read function (nread < 0)");
+        /* Loop that starts reading until the client send the login command */
+        do {
+            nread = read(client_fd, buffer, BUF_SIZE-1);
+            if(nread < 0) error("read function (nread < 0)");
 
-      /* If the client sends anything to the server */
-      if(nread > 0) {
-	      buffer[nread] = '\0';
+            /* If the client sends anything to the server */
+            if(nread > 0) {
+                buffer[nread] = '\0';
 
-        /* If client send 'QUIT' ends the communication */
-        if(strcmp(buffer, "QUIT") == 0) {
-          checking = 0;
-          break;
-        }
+                /* If client send 'QUIT' ends the communication */
+                if(strcmp(buffer, "QUIT") == 0) {
+                    checking = false;
+                    break;
+                }
 
-        /* Checking if the 'LOGIN' command was written */
-        token = strtok(buffer, " ");
-        if(strcmp(token, "LOGIN") != 0) {
-          if(sprintf(message, "%s is not the valid commaSnd, to login please use: LOGIN <username> <password>", token) < 0) {
-            error("creating login invalid command message");
-          }
-          if(write(client_fd, message, 1 + strlen(message)) == -1) {
-            error("sending login invalid command message");
-          }
-          break;
-        }
+                /* Checking if the 'LOGIN' command was written */
+                token = strtok(buffer, " ");
+                if(strcmp(token, "LOGIN") != 0) {
+                    if(sprintf(message, "%s is not the valid commaSnd, to login please use: LOGIN <username> <password>", token) < 0) error("creating login invalid command message");
+                    if(write(client_fd, message, 1 + strlen(message)) == -1) error("sending login invalid command message");
+                    break;
+                }
 
-        /* Checking if the user name was written and save it in 'USER_NAME' global variable */
-        token = strtok(NULL, " ");
-        if(token == NULL) {
-          if(sprintf(message, "Please insert the user name to login: LOGIN <username> <password>") < 0) {
-            error("creating login invalid user name message");
-          }
-          if(write(client_fd, message, 1 + strlen(message)) == -1) {
-            error("sending login invalid user name message");
-          }
-          break;
-        }
-        else USER_NAME = token;
+                /* Checking if the user name was written and save it in 'USER_NAME' global variable */
+                token = strtok(NULL, " ");
+                if(token == NULL) {
+                    if(sprintf(message, "Please insert the user name to login: LOGIN <username> <password>") < 0) error("creating login invalid user name message");
+                    if(write(client_fd, message, 1 + strlen(message)) == -1) error("sending login invalid user name message");
+                    break;
+                }
+                else strncpy(USER_NAME, token, sizeof(USER_NAME));
 
-        /* Checking if the password was written and save it in 'USER_PASSWORD' global variable */
-        token = strtok(NULL, " ");
-        if(token == NULL) {
-          if(sprintf(message, "Please insert the password to login: LOGIN <username> <password>") < 0) {
-            error("creating login invalid password message");
-          }
-          if(write(client_fd, message, 1 + strlen(message)) == -1) {
-            error("sending login invalid password message");
-          }
-          break;
-        }
-        else USER_PASSWORD = token;
-        
-        /* Checks if the user with password is in the config file. Sends 'OK' if it's and 'REJECTED' if not */
-        in_file = 0;
-        if((configFile = fopen(CONFIG_FILE_NAME, "r")) == NULL) {
-          error("opening the config file");
-        }
-        while(fgets(authentication, BUF_SIZE, configFile)) {
-          token = strtok(authentication, ";");
+                /* Checking if the password was written and save it in 'USER_PASSWORD' global variable */
+                token = strtok(NULL, " ");
+                if(token == NULL) {
+                    if(sprintf(message, "Please insert the password to login: LOGIN <username> <password>") < 0) error("creating login invalid password message");
+                    if(write(client_fd, message, 1 + strlen(message)) == -1) error("sending login invalid password message");
+                    break;
+                }
+                else strncpy(USER_PASSWORD, token, sizeof(USER_PASSWORD));
+                
+                /* Checks if the user with password is in the config file. Sends 'OK' if it's and 'REJECTED' if not */
+                in_file = false;
+                sem_wait(file_mutex);
+                if((configFile = fopen(CONFIG_FILE_NAME, "r")) == NULL) {
+                    sem_post(file_mutex);
+                    error("opening the config file");
+                }
+                while(fgets(authentication, BUF_SIZE, configFile)) {
+                    token = strtok(authentication, ";");
 
-          if(strcmp(token, USER_NAME) == 0) {
-            token = strtok(NULL, ";");
+                    if(strcmp(token, USER_NAME) == 0) {
+                        token = strtok(NULL, ";");
 
-            if(strcmp(token, USER_PASSWORD) == 0) {
-              USER_TYPE = strtok(NULL, ";");
-              USER_TYPE[strlen(USER_TYPE)-1] = 0;
-              if(sprintf(message, "OK") < 0) {
-                fclose(configFile);
-                error("creating 'OK' login message");
-              }
-              if(write(client_fd, message, 1 + strlen(message)) == -1) {
-                fclose(configFile);
-                error("sending 'OK' login message");
-              }
-              in_file = 1;
-              checking = 0;
-              break;
+                        if(strcmp(token, USER_PASSWORD) == 0) {
+                            token = strtok(NULL, ";");
+                            strncpy(USER_TYPE, token, sizeof(USER_TYPE));
+                            USER_TYPE[strlen(USER_TYPE)-1] = 0;
+                            if(sprintf(message, "OK") < 0) {
+                                fclose(configFile);
+                                sem_post(file_mutex);
+                                error("creating 'OK' login message");
+                            }
+                            if(write(client_fd, message, 1 + strlen(message)) == -1) {
+                                fclose(configFile);
+                                sem_post(file_mutex);
+                                error("sending 'OK' login message");
+                            }
+                            in_file = true;
+                            checking = false;
+                            break;
+                        }
+                    }
+                }
+                fclose(configFile);  // closes the file
+                sem_post(file_mutex);
+
+                /* In case the user name and or password aren't correct */
+                if(!in_file) {
+                    if(sprintf(message, "REJECTED") < 0) error("creating 'REJECTED' login message");
+                    if(write(client_fd, message, 1 + strlen(message)) == -1) error("sending 'REJECTED' login message");
+                }
+                break;
             }
-          }
-        }
-        fclose(configFile);  // closes the file
-
-        /* In case the user name and or password aren't correct */
-        if(!in_file) {
-          if(sprintf(message, "REJECTED") < 0) {
-            error("creating 'REJECTED' login message");
-          }
-          if(write(client_fd, message, 1 + strlen(message)) == -1) {
-            error("sending 'REJECTED' login message");
-          }
-        }
-        break;
-      }
-    } while(1);
-  }
+        } while(true);
+    }
 }
 
 /**
  * Process the tcp client requesting a login and then reading the commands sent.
  */
 void process_tcp_client(int client_fd) {
-    USER_NAME = (char*) malloc(sizeof(char)*30);
-    USER_PASSWORD = (char*) malloc(sizeof(char)*30);
-    USER_TYPE = (char*) malloc(sizeof(char)*20);
+    memset(USER_NAME, 0, sizeof(USER_NAME));
+    memset(USER_PASSWORD, 0, sizeof(USER_PASSWORD));
+    memset(USER_TYPE, 0, sizeof(USER_TYPE));
 
     int nread;
     char buffer[BUF_SIZE];
     char message[BUF_SIZE + 18];
-    short waiting_commands = 1;
+    bool waiting_commands = true;
 
     /* Requests the login first */
     request_login_tcp(client_fd);
@@ -384,7 +379,7 @@ void process_tcp_client(int client_fd) {
             
                 /* Command identification */
                 if(strcmp(buffer, "QUIT") == 0) {
-                    waiting_commands = 0;
+                    waiting_commands = false;
                     break;
                 }
                 else if(strcmp(buffer, "LIST_CLASSES") == 0) list_classes(message);
@@ -688,9 +683,8 @@ int create_udp_server(int UDP_SV_PORT) {
  */
 void request_login_udp(int udp_fd, struct sockaddr_in client_addr, socklen_t client_addr_size) {
     int nread;
-    FILE* configFile;
-    short checking = 1;
-    short in_file;
+    bool checking = true;
+    bool in_file;
     char buffer[BUF_SIZE];
     char authentication[BUF_SIZE];
     char message[BUF_SIZE];
@@ -701,104 +695,92 @@ void request_login_udp(int udp_fd, struct sockaddr_in client_addr, socklen_t cli
 
     /* Loop that ends when the login was successfully done or the user quit */
     while(checking) {
-      /* Writes the login message */
-      if(sendto(udp_fd, login_message, strlen(login_message), 0, (struct sockaddr*)&client_addr, client_addr_size) == -1) {
-        error("sending login message");
-      }
+        /* Writes the login message */
+        if(sendto(udp_fd, login_message, strlen(login_message), 0, (struct sockaddr*)&client_addr, client_addr_size) == -1) error("sending login message");
 
-      /* Loop that starts reading until the client send the login command */
-      do {
-        nread = recvfrom(udp_fd, buffer, BUF_SIZE-1, 0, (struct sockaddr*)&client_addr, &client_addr_size);
-        if(nread < 0) error("read function (nread < 0)");
+        /* Loop that starts reading until the client send the login command */
+        do {
+            nread = recvfrom(udp_fd, buffer, BUF_SIZE-1, 0, (struct sockaddr*)&client_addr, &client_addr_size);
+            if(nread < 0) error("read function (nread < 0)");
 
-        if(nread > 0) {
-          buffer[nread] = '\0';
+            if(nread > 0) {
+                buffer[nread] = '\0';
 
-          /* If client send 'QUIT' ends the communication */
-          if(strcmp(buffer, "QUIT") == 0) {
-            checking = 0;
-            break;
-          }
-
-          /* Checking if the 'LOGIN' command was written */
-          token = strtok(buffer, " ");
-          if(strcmp(token, "LOGIN") != 0) {
-            if(sprintf(message, "%s is not the valid command, to login please use: LOGIN <username> <password>", token) < 0) {
-              error("creating login invalid command message");
-            }
-            if(sendto(udp_fd, message, strlen(message), 0, (struct sockaddr*)&client_addr, client_addr_size) == -1) {
-              error("sending login invalid command message");
-            }
-            break;
-          }
-
-          /* Checking if the user name was written and save it in 'USER_NAME' global variable */
-          token = strtok(NULL, " ");
-          if(token == NULL) {
-            if(sprintf(message, "Please insert the user name to login: LOGIN <username> <password>") < 0) {
-              error("creating login invalid user name message");
-            }
-            if(sendto(udp_fd, message, strlen(message), 0, (struct sockaddr*)&client_addr, client_addr_size) == -1) {
-              error("sending login invalid user name message");
-            }
-            break;
-          }
-          else USER_NAME = token;
-
-          /* Checking if the password was written and save it in 'USER_PASSWORD' global variable */
-          token = strtok(NULL, " ");
-          if(token == NULL) {
-            if(sprintf(message, "Please insert the password to login: LOGIN <username> <password>") < 0) {
-              error("creating login invalid password message");
-            }
-            if(sendto(udp_fd, message, strlen(message), 0, (struct sockaddr*)&client_addr, client_addr_size) == -1) {
-              error("sending login invalid password message");
-            }
-            break;
-          }
-          else USER_PASSWORD = token;
-            
-          /* Checks if the user with password is in the config file. Sends 'OK' if it's and 'REJECTED' if not */
-          in_file = 0;
-          if((configFile = fopen(CONFIG_FILE_NAME, "r")) == NULL) {
-            error("opening the config file");
-          }
-          while(fgets(authentication, BUF_SIZE, configFile)) {
-            token = strtok(authentication, ";");
-
-            if(strcmp(token, USER_NAME) == 0) {
-              token = strtok(NULL, ";");
-
-              if(strcmp(token, USER_PASSWORD) == 0) {
-                USER_TYPE = strtok(NULL, ";");
-                if(sprintf(message, "OK") < 0) {
-                  fclose(configFile);
-                  error("creating 'OK' login message");
+                /* If client send 'QUIT' ends the communication */
+                if(strcmp(buffer, "QUIT") == 0) {
+                    checking = false;
+                    break;
                 }
-                if(sendto(udp_fd, message, strlen(message), 0, (struct sockaddr*)&client_addr, client_addr_size) == -1) {
-                  fclose(configFile);
-                  error("sending 'OK' login message");
+
+                /* Checking if the 'LOGIN' command was written */
+                token = strtok(buffer, " ");
+                if(strcmp(token, "LOGIN") != 0) {
+                    if(sprintf(message, "%s is not the valid command, to login please use: LOGIN <username> <password>", token) < 0) error("creating login invalid command message");
+                    if(sendto(udp_fd, message, strlen(message), 0, (struct sockaddr*)&client_addr, client_addr_size) == -1) error("sending login invalid command message");
+                    break;
                 }
-                in_file = 1;
-                checking = 0;
+
+                /* Checking if the user name was written and save it in 'USER_NAME' global variable */
+                token = strtok(NULL, " ");
+                if(token == NULL) {
+                    if(sprintf(message, "Please insert the user name to login: LOGIN <username> <password>") < 0) error("creating login invalid user name message");
+                    if(sendto(udp_fd, message, strlen(message), 0, (struct sockaddr*)&client_addr, client_addr_size) == -1) error("sending login invalid user name message");
+                    break;
+                }
+                else strncpy(USER_NAME, token, sizeof(USER_NAME));
+
+                /* Checking if the password was written and save it in 'USER_PASSWORD' global variable */
+                token = strtok(NULL, " ");
+                if(token == NULL) {
+                    if(sprintf(message, "Please insert the password to login: LOGIN <username> <password>") < 0) error("creating login invalid password message");
+                    if(sendto(udp_fd, message, strlen(message), 0, (struct sockaddr*)&client_addr, client_addr_size) == -1) error("sending login invalid password message");
+                    break;
+                }
+                else strncpy(USER_PASSWORD, token, sizeof(USER_PASSWORD));
+                    
+                /* Checks if the user with password is in the config file. Sends 'OK' if it's and 'REJECTED' if not */
+                in_file = false;
+                sem_wait(file_mutex);
+                if((configFile = fopen(CONFIG_FILE_NAME, "r")) == NULL) {
+                    sem_post(file_mutex);
+                    error("opening the config file");
+                }
+                while(fgets(authentication, BUF_SIZE, configFile)) {
+                    token = strtok(authentication, ";");
+
+                    if(strcmp(token, USER_NAME) == 0) {
+                        token = strtok(NULL, ";");
+
+                        if(strcmp(token, USER_PASSWORD) == 0) {
+                            token = strtok(NULL, ";");
+                            strncpy(USER_TYPE, token, sizeof(USER_TYPE));
+                            if(sprintf(message, "OK") < 0) {
+                                fclose(configFile);
+                                sem_post(file_mutex);
+                                error("creating 'OK' login message");
+                            }
+                            if(sendto(udp_fd, message, strlen(message), 0, (struct sockaddr*)&client_addr, client_addr_size) == -1) {
+                                fclose(configFile);
+                                sem_post(file_mutex);
+                                error("sending 'OK' login message");
+                            }
+                            in_file = true;
+                            checking = false;
+                            break;
+                        }
+                    }
+                }
+                fclose(configFile);  // closes the file
+                sem_post(file_mutex);
+
+                /* In case the user name and or password aren't correct */
+                if(!in_file) {
+                    if(sprintf(message, "REJECTED") < 0) error("creating 'REJECTED' login message");
+                    if(sendto(udp_fd, message, strlen(message), 0, (struct sockaddr*)&client_addr, client_addr_size) == -1) error("sending 'REJECTED' login message");
+                }
                 break;
-              }
             }
-          }
-          fclose(configFile);  // closes the file
-
-          /* In case the user name and or password aren't correct */
-          if(!in_file) {
-            if(sprintf(message, "REJECTED") < 0) {
-              error("creating 'REJECTED' login message");
-            }
-            if(sendto(udp_fd, message, strlen(message), 0, (struct sockaddr*)&client_addr, client_addr_size) == -1) {
-              error("sending 'REJECTED' login message");
-            }
-          }
-          break;
-        }
-      } while(1);
+        } while(true);
     }
 }
 
@@ -806,9 +788,9 @@ void request_login_udp(int udp_fd, struct sockaddr_in client_addr, socklen_t cli
  * Process the udp client requesting a login and then reading the commands sent.
  */
 void process_udp_client(int udp_fd) {
-    USER_NAME = (char*) malloc(sizeof(char)*30);
-    USER_PASSWORD = (char*) malloc(sizeof(char)*30);
-    USER_TYPE = (char*) malloc(sizeof(char)*20);
+    memset(USER_NAME, 0, sizeof(USER_NAME));
+    memset(USER_PASSWORD, 0, sizeof(USER_PASSWORD));
+    memset(USER_TYPE, 0, sizeof(USER_TYPE));
 
     struct sockaddr_in client_addr;
     socklen_t client_addr_size = sizeof(client_addr);
@@ -862,15 +844,6 @@ void process_udp_client(int udp_fd) {
  *******************************************************/
 
 /**
- * Liberates all dynamic memories globally created.
- */
-void free_credential_vars() {
-  free(USER_NAME);
-  free(USER_PASSWORD);
-  free(USER_TYPE);
-}
-
-/**
  * Closes all the sockets created if they exist.
  */
 void close_sockets() {
@@ -910,12 +883,16 @@ void close_shm() {
  * Frees all resources.
  */
 void free_all_resources() {
-    free_credential_vars();
     close_sockets();
     close_shm();
     if(mutexCreated) {
         sem_close(mutex);
         sem_unlink(BIN_SEM_PATH);
+    }
+    if(file_mutexCreated) {
+        if(sem_trywait(file_mutex) != 0) fclose(configFile);
+        sem_close(file_mutex);
+        sem_unlink(FILE_BIN_SEM_PATH);
     }
 }
 
