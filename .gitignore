@@ -1,3 +1,5 @@
+sysv/
+
 *.o
 
 class_server

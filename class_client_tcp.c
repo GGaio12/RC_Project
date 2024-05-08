@@ -115,9 +115,7 @@ int main(int argc, char *argv[]) {
                             fgets(message, sizeof(message), stdin);
                             message[strcspn(message, "\n")] = 0;
 
-                            if(write(fd, message, 1 + strlen(message)) == -1) {
-                                error("sending login credentials message");
-                            }
+                            if(write(fd, message, 1 + strlen(message)) == -1) error("sending login credentials message");
 
                             if(strcmp(message, "QUIT") == 0) break;
                         }

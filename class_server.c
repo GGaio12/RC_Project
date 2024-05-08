@@ -33,11 +33,11 @@
 #include <stdbool.h>
 
 #define BUF_SIZE 1024 // size of the buffer used for send and recive messages
-#define MAX_NAME_LENGTH 30
-#define MAX_PASS_LENGTH 20
-#define MAX_TYPE_LENGTH 20
+#define MAX_NAME_LENGTH 31
+#define MAX_PASS_LENGTH 21
+#define MAX_TYPE_LENGTH 21
 #define MAX_CLASSES 5
-#define MAX_CLASS_SIZE 50
+#define MAX_CLASS_SIZE 51
 #define MULTICAST_PORT 9867
 #define BASE_MULTICAST_IP "239.0.0."
 #define SHM_PATH "classes_shm"
@@ -52,7 +52,7 @@ void list_classes(char* message);
 void list_subscribed(char* message);
 void subscribe_class(char* message, char* name);
 void create_class(char* message, char* name, char* size);
-void send_text(char* name, char* text);
+void send_text(char* message, char* name, char* text);
 int create_multicast_socket();
 struct sockaddr_in create_multicast_addr(char* multicast_ip);
 
@@ -61,6 +61,10 @@ struct sockaddr_in create_multicast_addr(char* multicast_ip);
 int create_udp_server(int UDP_SV_PORT);
 void request_login_udp(int udp_fd, struct sockaddr_in client_addr, socklen_t client_addr_size);
 void process_udp_client(int udp_fd);
+void quit_server();
+void list_users(char* message);
+void del_user(char* message, char* name);
+void add_user(char* message, char* name, char* pass, char* type);
 
 /* Functions prototipes for program suddenly close and/or error */
 void free_credential_vars();
@@ -68,6 +72,7 @@ void close_sockets();
 void close_shm();
 void free_all_resources();
 void handle_sigint();
+void handle_sigquit();
 void error(char *msg);
 
 typedef struct Class {
@@ -190,6 +195,7 @@ int main(int argc, char* argv[]) {
                 /* Creates a child process to process the communication with the user */
                 if(fork() == 0) {
                     close(tcp_fd);
+                    signal(SIGQUIT, handle_sigquit);
                     process_tcp_client(tcp_client);
                     exit(EXIT_SUCCESS);
                 }
@@ -277,7 +283,7 @@ void request_login_tcp(int client_fd) {
                 /* Checking if the 'LOGIN' command was written */
                 token = strtok(buffer, " ");
                 if(strcmp(token, "LOGIN") != 0) {
-                    if(sprintf(message, "%s is not the valid commaSnd, to login please use: LOGIN <username> <password>", token) < 0) error("creating login invalid command message");
+                    if(sprintf(message, "%s is not the valid a command. To login please use: LOGIN <username> <password>", token) < 0) error("creating login invalid command message");
                     if(write(client_fd, message, 1 + strlen(message)) == -1) error("sending login invalid command message");
                     break;
                 }
@@ -392,15 +398,24 @@ void process_tcp_client(int client_fd) {
                         if(token == NULL || strtok(NULL, " ") != NULL) {
                             if(sprintf(message, "Invalid command. USE: SUBSCRIBE_CLASS {name}") < 0) error("creating invalid command message");
                         }
-                        else subscribe_class(message, token);
+                        else if(strlen(token) >= MAX_NAME_LENGTH) {
+                            if(sprintf(message, "Invalid command. Class name must be <= %d", MAX_NAME_LENGTH-1) < 0) error("creating invalid command message");
+                        }
+                        else {
+                            strncpy(name, token, sizeof(name));
+                            subscribe_class(message, name);
+                        }
                     }
-                    else if(strcmp(token, "CREATE_CLASS") == 0 && strcmp(USER_TYPE, "professor") == 0) {
+                    else if(strcmp(token, "CREATE_CLASS") == 0 && strcmp(USER_TYPE, "aluno") != 0) {
                         token = strtok(NULL, " ");
                         if(token == NULL) {
                             if(sprintf(message, "Invalid command. USE: CREATE_CLASS {name} {size}") < 0) error("creating invalid command message");
                         }
+                        else if(strlen(token) >= MAX_NAME_LENGTH) {
+                            if(sprintf(message, "REJECTED: NAME MUST NOT EXCEED %d CHARACTERS", MAX_NAME_LENGTH-1) < 0) error("creating invalid command message");
+                        }
                         else {
-                            strcpy(name, token);
+                            strncpy(name, token, sizeof(name));
 
                             token = strtok(NULL, " ");
                             if(token == NULL || strtok(NULL, " ") != NULL) {
@@ -409,14 +424,17 @@ void process_tcp_client(int client_fd) {
                             else create_class(message, name, token);
                         }
                     }
-                    else if(strcmp(token, "SEND") == 0 && strcmp(USER_TYPE, "professor") == 0) {
+                    else if(strcmp(token, "SEND") == 0 && strcmp(USER_TYPE, "aluno") != 0) {
                         char text[BUF_SIZE];
+                        token = strtok(NULL, " ");
                         if(token == NULL) {
                             if(sprintf(message, "Invalid command. USE: SEND {name} {text to send}") < 0) error("creating invalid command message");
                         }
+                        else if(strlen(token) >= MAX_NAME_LENGTH) {
+                            if(sprintf(message, "REJECTED: NAME MUST NOT EXCEED %d CHARACTERS", MAX_NAME_LENGTH-1) < 0) error("creating invalid command message");
+                        }
                         else {
-                            token = strtok(NULL, " ");
-                            strcpy(name, token);
+                            strncpy(name, token, sizeof(name));
 
                             int text_start = strlen("SEND ") + strlen(name) + 1; // +1 for the space between name and text
                             int text_length = nread - 1 - text_start;
@@ -428,12 +446,12 @@ void process_tcp_client(int client_fd) {
                                 strncpy(text, buffer + text_start, nread-1);
                                 text[text_length] = '\0';
 
-                                send_text(name, text);
+                                send_text(message, name, text);
                                 break;
                             }
                         }
                     }
-                    else strcpy(message, "Message not recognized");
+                    else strcpy(message, "Command not recognized");
                 }
 
                 /* Sending message generated by the command */
@@ -441,7 +459,7 @@ void process_tcp_client(int client_fd) {
 
                 break;
             }
-        } while(1);
+        } while(true);
     } while(waiting_commands);
     close(client_fd); // closes the client socket
 }
@@ -555,8 +573,7 @@ void create_class(char* message, char* name, char* size) {
     bool have_same_name = false;
     sem_wait(mutex);
     /* Verifies if there are space to create a new class */
-    if(strlen(name) >= MAX_NAME_LENGTH) strcpy(message, "REJECTED: NAME IS TOO BIG");
-    else if(atoi(size) >= MAX_CLASS_SIZE) strcpy(message, "REJECTED: SIZE EXCEEDS MAX SIZE");
+    if(atoi(size) >= MAX_CLASS_SIZE) sprintf(message, "REJECTED: SIZE EXCEEDS MAX SIZE OF %d", MAX_CLASS_SIZE-1);
     else if(atoi(size) < 1) strcpy(message, "REJECTED: SIZE NEEDS TO BE >= 1");
     else if(shm_ptr->n_classes >= MAX_CLASSES) strcpy(message, "REJECTED: MAX CLASSES REACHED");
     else {
@@ -597,9 +614,11 @@ void create_class(char* message, char* name, char* size) {
 /**
  * Sends a message to a class with a specific 'name'.
  */
-void send_text(char* name, char* text) {
+void send_text(char* message, char* name, char* text) {
     int class_socket;
     struct sockaddr_in class_addr;
+    bool class_found = false;
+    char text_to_send[BUF_SIZE + MAX_NAME_LENGTH + 32];
 
     int i = 0;
     sem_wait(mutex);
@@ -608,16 +627,20 @@ void send_text(char* name, char* text) {
         if(strcmp(shm_ptr->classes[i].name, name) == 0) {
             class_socket = shm_ptr->classes[i].socket;
             class_addr = shm_ptr->classes[i].addr;
+            class_found = true;
             break;
         }
         i++;
     }
     sem_post(mutex);
 
-    /* Sending muticast message */
-    if(sendto(class_socket, text, 1 + strlen(text), 0, (struct sockaddr *)&class_addr, sizeof(class_addr)) < 0) {
-        error("sending multicast message");
+    if(class_found) {
+        /* Sending muticast message */
+        if(sprintf(text_to_send, "MESSAGE FROM CLASS '%s': %s", name, text) < 0) error("creating text to send message");
+        if(sendto(class_socket, text_to_send, 1 + strlen(text_to_send), 0, (struct sockaddr *)&class_addr, sizeof(class_addr)) < 0) error("sending multicast message");
+        strcpy(message, "MESSAGE SENT");
     }
+    else strcpy(message, "CLASS NOT FOUND");
 }
 
 /**
@@ -737,7 +760,7 @@ void request_login_udp(int udp_fd, struct sockaddr_in client_addr, socklen_t cli
                     break;
                 }
                 else strncpy(USER_PASSWORD, token, sizeof(USER_PASSWORD));
-                    
+
                 /* Checks if the user with password is in the config file. Sends 'OK' if it's and 'REJECTED' if not */
                 in_file = false;
                 sem_wait(file_mutex);
@@ -752,20 +775,31 @@ void request_login_udp(int udp_fd, struct sockaddr_in client_addr, socklen_t cli
                         token = strtok(NULL, ";");
 
                         if(strcmp(token, USER_PASSWORD) == 0) {
+                            in_file = true;
                             token = strtok(NULL, ";");
                             strncpy(USER_TYPE, token, sizeof(USER_TYPE));
-                            if(sprintf(message, "OK") < 0) {
-                                fclose(configFile);
-                                sem_post(file_mutex);
-                                error("creating 'OK' login message");
+                            USER_TYPE[strlen(USER_TYPE) - 1] = 0;
+
+                            if(strcmp(USER_TYPE, "administrador") == 0) {
+                                if(sprintf(message, "OK") < 0) {
+                                    fclose(configFile);
+                                    sem_post(file_mutex);
+                                    error("creating 'OK' login message");
+                                }
+                                checking = false;
+                            }
+                            else {
+                                if(sprintf(message, "USER IS NOT ADM") < 0) {
+                                    fclose(configFile);
+                                    sem_post(file_mutex);
+                                    error("creating not adm login message");
+                                }
                             }
                             if(sendto(udp_fd, message, strlen(message), 0, (struct sockaddr*)&client_addr, client_addr_size) == -1) {
                                 fclose(configFile);
                                 sem_post(file_mutex);
                                 error("sending 'OK' login message");
                             }
-                            in_file = true;
-                            checking = false;
                             break;
                         }
                     }
@@ -781,6 +815,7 @@ void request_login_udp(int udp_fd, struct sockaddr_in client_addr, socklen_t cli
                 break;
             }
         } while(true);
+        if(checking == false) break;
     }
 }
 
@@ -795,11 +830,11 @@ void process_udp_client(int udp_fd) {
     struct sockaddr_in client_addr;
     socklen_t client_addr_size = sizeof(client_addr);
     int nread;
-    char buffer[BUF_SIZE];
-    char message[BUF_SIZE];
-    short waiting_commands = 1;
+    char buffer[2*BUF_SIZE];
+    char message[2*BUF_SIZE];
+    bool waiting_commands = true;
 
-    nread = recvfrom(udp_fd, buffer, BUF_SIZE-1, 0, (struct sockaddr*)&client_addr, &client_addr_size);
+    nread = recvfrom(udp_fd, buffer, (2*BUF_SIZE)-1, 0, (struct sockaddr*)&client_addr, &client_addr_size);
     if(nread < 0) error("read function (nread < 0)");
 
     if(nread > 0) {
@@ -819,21 +854,218 @@ void process_udp_client(int udp_fd) {
     
         /* Wait for the client to send a new command and process it. If command is 'QUIT' ends the comunication */
         do {
-            nread = recvfrom(udp_fd, buffer, BUF_SIZE-1, 0, (struct sockaddr*)&client_addr, &client_addr_size);
+            nread = recvfrom(udp_fd, buffer, (2*BUF_SIZE)-1, 0, (struct sockaddr*)&client_addr, &client_addr_size);
             if(nread < 0) error("read function (nread < 0)");
 
             if(nread > 0) {
                 buffer[nread] = '\0';
 
-                printf("Command %s received", buffer);
-                fflush(stdout);
-
-                if(strcmp(buffer, "QUIT") == 0) waiting_commands = 0;
+                /* Command identification */
+                if(strcmp(buffer, "QUIT") == 0) {
+                    waiting_commands = false;
+                    break;
+                }
+                else if(strcmp(buffer, "QUIT_SERVER") == 0) quit_server();
+                else if(strcmp(buffer, "LIST") == 0) list_users(message);
+                else {
+                    char* token = strtok(buffer, " ");
+                    char name[MAX_NAME_LENGTH];
+                    if(strcmp(token, "DEL") == 0) {
+                        token = strtok(NULL, " ");
+                        if(token == NULL || strtok(NULL, " ") != NULL) {
+                            if(sprintf(message, "Invalid command. USE: DEL {user_name}") < 0) error("creating invalid command message");
+                        }
+                        else if(strlen(token) >= MAX_NAME_LENGTH) {
+                            if(sprintf(message, "Invalid command. NAME MUST NOT EXCEED %d CHARACTERS", MAX_NAME_LENGTH-1) < 0) error("creating invalid command message");
+                        }
+                        else {
+                            strncpy(name, token, sizeof(name));
+                            del_user(message, name);
+                        }
+                    }
+                    else if(strcmp(token, "ADD_USER") == 0) {
+                        char pass[MAX_PASS_LENGTH];
+                        char type[MAX_TYPE_LENGTH];
+                        token = strtok(NULL, " ");
+                        if(token == NULL) {
+                            if(sprintf(message, "Invalid command. USE: ADD_USER {user_name} {password} {user_type}") < 0) error("creating invalid command message");
+                        }
+                        else if(strlen(token) >= MAX_NAME_LENGTH) {
+                            if(sprintf(message, "Invalid command. NAME MUST NOT EXCEED %d CHARACTERS", MAX_NAME_LENGTH-1) < 0) error("creating invalid command message");
+                        }
+                        else {
+                            strncpy(name, token, sizeof(name));
+                            token = strtok(NULL, " ");
+                            if(token == NULL) {
+                                if(sprintf(message, "Invalid command. USE: ADD_USER {user_name} {password} {user_type}") < 0) error("creating invalid command message");
+                            }
+                            else if(strlen(token) >= MAX_PASS_LENGTH) {
+                                if(sprintf(message, "Invalid command. PASSWORD MUST NOT EXCEED %d CHARACTERS", MAX_PASS_LENGTH-1) < 0) error("creating invalid command message");
+                            }
+                            else {
+                                strncpy(pass, token, sizeof(pass));
+                                token = strtok(NULL, " ");
+                                if(token == NULL) {
+                                    if(sprintf(message, "Invalid command. USE: ADD_USER {user_name} {password} {user_type}") < 0) error("creating invalid command message");
+                                }
+                                else if(strlen(token) >= MAX_TYPE_LENGTH) {
+                                    if(sprintf(message, "Invalid command. USER TYPE MUST NOT EXCEED %d CHARACTERS", MAX_TYPE_LENGTH-1) < 0) error("creating invalid command message");
+                                }
+                                else {
+                                    strncpy(type, token, sizeof(type));
+                                    add_user(message, name, pass, type);
+                                }
+                            }
+                        }
+                    }
+                    else strcpy(message, "Command not recognized");
+                }
+                
+                /* Sending message generated by the command */
+                if(sendto(udp_fd, message, strlen(message), 0, (struct sockaddr*)&client_addr, client_addr_size) == -1) error("sending message");
 
                 break;
             }
-        } while(1);
+        } while(true);
     } while(waiting_commands);
+}
+
+/**
+ * Lists all the users info present in config file.
+ */
+void list_users(char* message) {
+    char line[BUF_SIZE];
+    char name[MAX_NAME_LENGTH];
+    char pass[MAX_PASS_LENGTH];
+    char type[MAX_TYPE_LENGTH];
+    char* token;
+
+    strcpy(message, "------- USERS LIST -------");
+
+    /* Checks if the user with password is in the config file. Sends 'OK' if it's and 'REJECTED' if not */
+    sem_wait(file_mutex);
+    if((configFile = fopen(CONFIG_FILE_NAME, "r")) == NULL) {
+        sem_post(file_mutex);
+        error("opening the config file");
+    }
+    int i = 0;
+    while(fgets(line, BUF_SIZE, configFile)) {
+        memset(name, 0, sizeof(name));
+        memset(name, 0, sizeof(name));
+        memset(name, 0, sizeof(name));
+
+        token = strtok(line, ";");
+        strcpy(name, token);
+
+        token = strtok(NULL, ";");
+        strcpy(pass, token);
+
+        token = strtok(NULL, ";");
+        strcpy(type, token);
+
+        if(i != 0) strcat(message, "\n--------------------------");
+        strcat(message, "\nUSER NAME: ");
+        strcat(message, name);
+        strcat(message, "\n PASSWORD: ");
+        strcat(message, pass);
+        strcat(message, "\n   TYPE  : ");
+        strcat(message, type);
+        if(message[strlen(message) - 1] == '\n') message[strlen(message) - 1] = 0;
+        i++;
+    }
+    fclose(configFile);
+    sem_post(file_mutex);
+
+    strcat(message, "\n------- USERS LIST -------");
+}
+
+/**
+ * Deletes a user with a specific user name from the config file.
+ */
+void del_user(char* message, char* name) {
+    FILE* tempFile;
+    char line[BUF_SIZE];
+    char newline[BUF_SIZE+1];
+    bool in_file = false;
+
+    tempFile = tmpfile();
+    if(tempFile == NULL) error("opening temporary file");
+
+    /* Checks if the user is in the config file and puts in temp file all other users */
+    sem_wait(file_mutex);
+    if((configFile = fopen(CONFIG_FILE_NAME, "r")) == NULL) {
+        sem_post(file_mutex);
+        fclose(tempFile);
+        error("opening the config file for read");
+    }
+    while(fgets(line, BUF_SIZE, configFile)) {
+        if(strncmp(line, name, strlen(name)) == 0) in_file = true;
+        else fputs(line, tempFile);
+    }
+    fclose(configFile);
+    
+    /* In case the user is not in the file */
+    if(!in_file) {
+        if(sprintf(message, "USER NOT FOUND") < 0) {
+            sem_post(file_mutex);
+            fclose(tempFile);
+            error("creating user not found message");
+        }
+    }
+    else {
+        /* Rewinding the temporary file to the beginning */
+        rewind(tempFile);
+
+        /* Rewriting the file with all the users info that are in temp file */
+        if((configFile = fopen(CONFIG_FILE_NAME, "w")) == NULL) {
+            sem_post(file_mutex);
+            fclose(tempFile);
+            error("opening the config file for write");
+        }
+        while(fgets(line, BUF_SIZE, tempFile)) fputs(line, configFile);
+        if(sprintf(message, "USER %s REMOVED SUCCESSFULLY", name) < 0) {
+            sem_post(file_mutex);
+            fclose(tempFile);
+            error("creating user removed message");
+        }
+        fclose(configFile);
+    }
+    sem_post(file_mutex);
+
+    fclose(tempFile);
+}
+
+/**
+ * Adds a new user with a specific name, password and type to the config file.
+ */
+void add_user(char* message, char* name, char* pass, char* type) {
+    char line[BUF_SIZE];
+    bool in_file = false;
+
+    sem_wait(file_mutex);
+    if((configFile = fopen(CONFIG_FILE_NAME, "r")) == NULL) {
+        sem_post(file_mutex);
+        error("opening the config file for append");
+    }
+    while(fgets(line, BUF_SIZE, configFile)) {
+        if(strncmp(line, name, strlen(name)) == 0) {
+            in_file = true;
+            break;
+        }
+    }
+    fclose(configFile);
+
+    if(in_file) strcpy(message, "USER ALREADY IN CONFIG FILE");
+    else{
+        if((configFile = fopen(CONFIG_FILE_NAME, "a")) == NULL) {
+            sem_post(file_mutex);
+            error("opening the config file for append");
+        }
+        fprintf(configFile, "%s;%s;%s\n", name, pass, type);
+        fclose(configFile);
+        if(sprintf(message, "USER %s ADDED SUCCESSFULLY", name) < 0) error("creating user added message");
+    }
+    sem_post(file_mutex);
 }
 
 
@@ -842,6 +1074,18 @@ void process_udp_client(int udp_fd) {
  *                     SYSTEM MANAGE
  * 
  *******************************************************/
+
+/**
+ * Ends server closing and freeing every process and resource.
+ */
+void quit_server() {
+    int status;
+    signal(SIGQUIT, SIG_IGN);
+    kill(0, SIGQUIT);
+    while(waitpid(-1, &status, WNOHANG) > 0);
+    free_all_resources();
+    exit(EXIT_SUCCESS);
+}
 
 /**
  * Closes all the sockets created if they exist.
@@ -900,21 +1144,26 @@ void free_all_resources() {
  * Handles SIGINT signal closing and freeing all the resorces.
  */
 void handle_sigint() {
-    if(getpid() == SV_PID) free_all_resources();
+    if(getpid() == SV_PID) quit_server();
     else close(tcp_client);
 
-    exit(EXIT_FAILURE);
+    exit(EXIT_SUCCESS);
+}
+
+/**
+ * Handles SIGQUIT signal closing and freeing all the resorces of child processes.
+ */
+void handle_sigquit() {
+    close(tcp_client);
+
+    exit(EXIT_SUCCESS);
 }
 
 /**
  * Prints an error message and exists after closes and frees everything.
  */
 void error(char *msg){
-    if(getpid() == SV_PID) {
-        signal(SIGQUIT, SIG_IGN);
-        kill(0, SIGQUIT);
-        free_all_resources();
-    }
+    if(getpid() == SV_PID) quit_server();
     else close(tcp_client);
 
 	printf("Error: %s\n", msg);
