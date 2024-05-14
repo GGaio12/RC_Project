@@ -39,6 +39,7 @@
 #define MAX_CLASSES 5
 #define MAX_CLASS_SIZE 51
 #define MULTICAST_PORT 9867
+#define TTL 4
 #define BASE_MULTICAST_IP "239.0.0."
 #define SHM_PATH "classes_shm"
 #define BIN_SEM_PATH "mutex"
@@ -648,10 +649,13 @@ void send_text(char* message, char* name, char* text) {
  */
 int create_multicast_socket() {
     int sock;
+    int ttl = TTL;
     
     /* Creating the socket */
     sock = socket(AF_INET, SOCK_DGRAM, 0);
     if(sock < 0) error("Socket creation failed");
+    
+    if(setsockopt(sock, IPPROTO_IP, IP_MULTICAST_TTL, &ttl, sizeof(ttl)) == -1) error("Setting soket ttl option");
 
     return sock;
 }

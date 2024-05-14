@@ -313,7 +313,7 @@ void add_class(char* name, char* addr_ip) {
     if(sock < 0) error("class socket creation");
 
     int opt = 1;
-    if (setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) error("setting SO_REUSEADDR option");
+    if(setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) error("setting SO_REUSEADDR option");
 
     struct sockaddr_in addr;
 
