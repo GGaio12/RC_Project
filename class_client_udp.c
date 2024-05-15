@@ -2,8 +2,9 @@
  * UDP CLIENT, links to the server (defined in argv[1]) in a specific 
  * port (in argv[2]). After connection the client is requested to login 
  * and then to send commands to the server to obtain some information 
- * from the server until they want to quit by send 'QUIT'.
- * USO: >class_client_udp <UDP_SV_ADDRESS> <UDP_SV_PORT>
+ * from the server until they want to quit by send 'QUIT' or ending
+ * server by doing 'QUIT_SERVER'.
+ * USO: >class_client_udp <SV_ADDRESS> <UDP_SV_PORT>
  **********************************************************************/
 #include <stdio.h>
 #include <sys/types.h>
@@ -48,7 +49,7 @@ int main(int argc, char *argv[]) {
 
     /* Verifies if all the arguments were given in file execution */
     if(argc != 3) {
-        printf("class_client <UDP_SV_ADDRESS> <UDP_SV_PORT> \n");
+        printf("class_client <SV_ADDRESS> <UDP_SV_PORT> \n");
         exit(EXIT_SUCCESS);
     }
 

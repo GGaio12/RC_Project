@@ -638,6 +638,7 @@ void send_text(char* message, char* name, char* text) {
     if(class_found) {
         /* Sending muticast message */
         if(sprintf(text_to_send, "MESSAGE FROM CLASS '%s': %s", name, text) < 0) error("creating text to send message");
+
         if(sendto(class_socket, text_to_send, 1 + strlen(text_to_send), 0, (struct sockaddr *)&class_addr, sizeof(class_addr)) < 0) error("sending multicast message");
         strcpy(message, "MESSAGE SENT");
     }
@@ -655,7 +656,7 @@ int create_multicast_socket() {
     sock = socket(AF_INET, SOCK_DGRAM, 0);
     if(sock < 0) error("Socket creation failed");
     
-    if(setsockopt(sock, IPPROTO_IP, IP_MULTICAST_TTL, &ttl, sizeof(ttl)) == -1) error("Setting soket ttl option");
+    if(setsockopt(sock, IPPROTO_IP, IP_MULTICAST_TTL, &ttl, sizeof(ttl)) == -1) error("Setting socket ttl option");
 
     return sock;
 }
