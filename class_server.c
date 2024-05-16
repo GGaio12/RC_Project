@@ -6,7 +6,7 @@
  * name and password, they can do every command their type can do by sending
  * the command to the server.
  * USE: >class_server <CLASS_PORT> <CONFIG_PORT> <CONFIG_FILE_NAME>
- * Compile: gcc class_server.c -lpthread -Wextra -Wall -lm -lrt -o class_server 
+ * Compile: gcc class_server.c -lpthread -lm -lrt -o class_server 
  *******************************************************************************/
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -39,7 +39,7 @@
 #define MAX_CLASSES 5
 #define MAX_CLASS_SIZE 51
 #define MULTICAST_PORT 9867
-#define TTL 4
+#define TTL 5
 #define BASE_MULTICAST_IP "239.0.0."
 #define SHM_PATH "classes_shm"
 #define BIN_SEM_PATH "mutex"
@@ -689,6 +689,7 @@ struct sockaddr_in create_multicast_addr(char* multicast_ip) {
 int create_udp_server(int UDP_SV_PORT) {
     int udp_fd;
     struct sockaddr_in udp_addr;
+    int ttl = TTL;
 
     /* Filling up the socket address structure */
     bzero((void *) &udp_addr, sizeof(udp_addr));
@@ -699,6 +700,9 @@ int create_udp_server(int UDP_SV_PORT) {
     /* Creating UDP socket */
     udp_fd = socket(AF_INET, SOCK_DGRAM, 0);
     if(udp_fd < 0) error("socket function (udp_fd < 0)");
+
+    /* Setting TTL option */
+    if(setsockopt(udp_fd, IPPROTO_IP, IP_TTL, &ttl, sizeof(ttl)) == -1) error("Setting socket ttl option");
 
     /* Binding the socket with the address info */
     if(bind(udp_fd, (struct sockaddr*)&udp_addr, sizeof(udp_addr)) < 0) error("bind function");
@@ -990,7 +994,6 @@ void list_users(char* message) {
 void del_user(char* message, char* name) {
     FILE* tempFile;
     char line[BUF_SIZE];
-    char newline[BUF_SIZE+1];
     bool in_file = false;
 
     tempFile = tmpfile();
@@ -1167,7 +1170,7 @@ void handle_sigquit() {
 /**
  * Prints an error message and exists after closes and frees everything.
  */
-void error(char *msg){
+void error(char *msg) {
     if(getpid() == SV_PID) quit_server();
     else close(tcp_client);
 

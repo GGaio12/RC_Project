@@ -1,6 +1,7 @@
 {
     "files.associations": {
         "typeinfo": "c",
-        "types.h": "c"
+        "types.h": "c",
+        "select.h": "c"
     }
 }

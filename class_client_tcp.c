@@ -4,6 +4,7 @@
  * and then to send commands to the server to obtain some information 
  * from the server until they want to quit by send 'QUIT'.
  * USO: >class_client_tcp <TCP_SV_ADDRESS> <TCP_SV_PORT>
+ * Compile: gcc class_client_tcp.c -lpthread -o class_client_tcp 
  **********************************************************************/
 #include <stdio.h>
 #include <sys/types.h>
@@ -407,7 +408,7 @@ void handle_sigint() {
 /**
  * Prints an error message and exists after closes the socket if it isn't closed yet.
  */
-void error(char *msg){
+void error(char *msg) {
     if(ClasseMessagesReceiverCreated) pthread_kill(Classe_messages_receiver_id, SIGINT);
     close_sockets();
     pthread_mutex_destroy(&mutex);

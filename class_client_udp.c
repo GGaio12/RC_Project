@@ -164,7 +164,7 @@ void handle_sigint() {
 /**
  * Prints an error message and exists after closes the socket if it isn't closed yet.
  */
-void error(char *msg){
+void error(char *msg) {
     close_socket();
 
     printf("Error: %s\n", msg);
